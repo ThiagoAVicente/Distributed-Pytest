@@ -1,9 +1,10 @@
 import json
+import logging
 import pickle
 from socket import socket
 from typing import Optional, Dict, Any, Tuple
 from datetime import datetime
-from socket import socket
+import socket as s
 
 
 class CDProto:
@@ -11,64 +12,52 @@ class CDProto:
 
     HEADER_SIZE = 2 # 2 bytes para o tamanho
 
+    @classmethod
+    def brodCast(cls, sock:s.socket, data: Dict[str,any]):
+
+        sock.setsockopt(s.SOL_SOCKET, s.SO_BROADCAST, 1)
 
     @classmethod
-    def send(cls, conn: socket, data: Dict[str, Any]) -> bool:
-        """Envia dados através da conexão"""
+    def send(cls, sock: s.socket, addr: Tuple[str, int], data: Dict[str, Any]) -> bool:
+        """Envia dados via UDP"""
         try:
-
-            #Serializa para JSON
             serialized = json.dumps(data).encode('utf-8')
             sz = len(serialized)
 
-            # Monta header: 2 bytes tamanho + 1 byte serializer
             header = sz.to_bytes(2, 'big')
             toSend = header + serialized
 
-            
-            #Envia
-            conn.sendall(toSend)
+            sock.sendto(toSend, addr)
             return True
 
         except Exception as e:
             print(f"Send error: {e}")
             return False
 
-
-
     @classmethod
-    def recv(cls, conn: socket) -> Optional[Dict[str, Any]]:
-        """Recebe e desserializa dados da conexão"""
+    def recv(cls, sock: s.socket) -> Optional[Tuple[Dict[str, Any], Tuple[str, int]]]:
+        """Recebe dados via UDP"""
         try:
-            # Lê os 2 bytes do header
-            header = conn.recv(cls.HEADER_SIZE)
-            if len(header) != cls.HEADER_SIZE:
-                raise CDProtoBadFormat()
+            # Lê header + corpo numa só chamada
+            packet, addr = sock.recvfrom(4096)
+            if len(packet) < cls.HEADER_SIZE:
+                return None
 
-            # Extrai o tamanho dos dados (primeiros 2 bytes)
-            size = int.from_bytes(header, 'big')
+            size = int.from_bytes(packet[:cls.HEADER_SIZE], 'big')
+            data = packet[cls.HEADER_SIZE:cls.HEADER_SIZE + size]
 
-            # Lê o corpo da mensagem
-            data = b''
-            while len(data) < size:
-                chunk = conn.recv(min(size - len(data), 4096))  # Lê em chunks
-                if not chunk:
-                    raise ConnectionError("Conexão fechada durante a leitura")
-                data += chunk
-
-            # Desserializa 
             message = json.loads(data.decode('utf-8'))
-            
-            return message
+
+            return message, addr
 
         except json.JSONDecodeError as e:
-            raise CDProtoBadFormat(data) from e
-
-        except Exception as e:
+            print("Decoding error:", e)
             return None
 
+        except Exception as e:
+            print("Recv error:", e)
+            return None
 
-    
 
 
 class CDProtoBadFormat(Exception):
