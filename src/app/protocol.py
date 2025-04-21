@@ -55,7 +55,7 @@ class CDProto:
             return None
 
         except Exception as e:
-            print("Recv error:", e)
+            #print("Recv error:", e)
             return None
 
 

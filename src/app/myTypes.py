@@ -4,6 +4,7 @@ import enum
 class T(enum.Enum):
     DISCOVERY = 0
     DISCOVERY_REP = 1
-    LIVECHECK = 2
-    WORKING = 3
-    FREE = 4
+    HEARTBEAT = 2
+    ELECTION = 3
+    ELECTION_REP = 4
+    MASTER = 5

@@ -28,7 +28,7 @@ menssagem enviada por um nó quando este não tem informação do nó central
 ### *ELECTION_REP*
 menssagem enviada pelos nós a indicar o seu id para poder eleger um novo nó central
 
-### *COORDINATOR*
+### *MASTER*
 menssagem enviada pelo nó que iniciou o processo de eleição com a informação de quem 
 é o novo coordenador
 

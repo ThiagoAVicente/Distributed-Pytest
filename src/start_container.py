@@ -28,7 +28,7 @@ def start_containers(n:int) -> None:
         print(f"Starting container {container_name}...")
 
         subprocess.run([
-            "docker", "run", "--rm", "-d","--network", "host", "--name", container_name,
+            "docker", "run", "-d","--network", "host", "--name", container_name,
             "-p", f"{port}:8000",
             "-v", f"{os.getcwd()}/app:/app",
             "-e", f"PORT={port}",
