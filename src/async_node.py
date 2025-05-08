@@ -1,6 +1,7 @@
 import asyncio
 from typing import Optional
-from async_protocol import AsyncProtocol, CDProto
+from async_protocol import AsyncProtocol
+from messageType import MessageType
 import functions as func
 
 import logging
@@ -11,6 +12,8 @@ logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %
 
 
 def getIp() -> str:
+    
+    return "127.0.0.1"
     "returns tje pc current ip address"
     import socket
     hostname = socket.gethostname()
@@ -26,21 +29,21 @@ class Node:
 
         # pytest variables
         self.projectQueue:asyncio.Queue = asyncio.Queue()
-        self.testQueue:asyncio.Queue = asyncio.Queue()
         self.current_project:Optional[str] = None
-        self.project_status:dict = {}
 
         # counters
         self.total_passed:int = 0
+        self.module_count:int = 0
         self.total_failed:int = 0
         self.project_count:int = 0
-        self.this_passed:int = 0
-        self.this_failed:int = 0
+        self.evaluation_counter:int = 0
 
+    """
+    starts the node communication protocol
+    """
     async def start(self):
-        """
-        start the node protocol
-        """
+        
+        # create communication protocol (udp)
         self.protocol = await AsyncProtocol.create(self.addr)
         logging.info(f"Node started at {self.addr}")
 
@@ -48,23 +51,28 @@ class Node:
         """
         send message through the protocol
         """
+        
+        # ensure start() was called
         if self.protocol:
             self.protocol.send(message, target_addr)
         else:
             raise RuntimeError("Protocol not started. use start() 1st")
 
+    """
+    defines the node listen loop
+    """
     async def listen(self):
-        """
-        defines the node loop
-        """
+
 
         # ensure start() was called
         if not self.protocol:
             raise RuntimeError("Protocol not started. use start() 1st")
 
         logging.info(f"Listening on {self.addr}")
+        
         while True:
             try:
+                # retrieve message from queue
                 message, addr = await self.protocol.recv()
                 logging.info(f"Received message from {addr} -- {message}")
 
@@ -74,15 +82,20 @@ class Node:
             except asyncio.CancelledError:
                 # loop canceled
                 break
-
-            except Exception as e:
-                logging.error(f"Error receiving message: {e}")
+            
+            finally:
                 await asyncio.sleep(SLEEPTIME)
 
+    """
+    function to process messages
+    """
     async def process_message(self, message:dict, addr:tuple[str,int]):
         cmd = message.get("cmd")
 
-        if cmd == "evaluation":
+        if cmd == MessageType.EVALUATION.name:
+            
+            self.evaluation_counter += 1
+            
             type = message.get("type")
 
             if type == "url":
@@ -94,7 +107,12 @@ class Node:
                         logging.info(f"Received URL: {url} with token: {token}")
 
                         project_path:str = await func.downloadFromGithub(token,url)
-
+                        res:bool = await func.verifyFolder(project_path)
+                                                
+                        if not res:
+                            await func.removeDir(project_path)
+                            return
+                        
                         # add project to the queue
                         await self.projectQueue.put(project_path)
 
@@ -104,85 +122,100 @@ class Node:
 
             elif type == "zip":
                 pass
-
+        
+        elif cmd == MessageType.STAT.name:
+            data = {
+                "all": {
+                    "failed": self.total_failed,
+                    "passed": self.total_passed,
+                    "projects": self.project_count,
+                    "evaluations": self.evaluation_counter,
+                },
+                # TODO : add each node info
+            }
+            # send data
+            await self.send_message({"cmd":MessageType.STAT_REP.name,"data": data},addr)
+                
         # TODO: add cmds
         else:
             logging.warning(f"Unknown command received: {cmd}")
 
+    """
+    loop to process projects
+    """
     async def process_projects(self):
         """
         async function to processes projects
         """
         while True:
-            self.current_project = await self.projectQueue.get() # wait for a new project
+            # wait for a new project
+            self.current_project = await self.projectQueue.get()
+            
+            # check if the project is valid
             if self.current_project is None: 
                 await asyncio.sleep(SLEEPTIME) 
                 continue
-
+                        
             try:
-                # read all tests
-                # print(self.current_project)
-                tests = await func.getAllTests(self.current_project)
-                self.project_count += 1
-                logging.info(f"Project {self.project_count} - {self.current_project} - {len(tests)} tests")
 
-                # tests -> queue
-                for test in tests:
-                    await self.testQueue.put(test)
+                self.project_count += 1
 
                 await self.run_tests()
-
-                data = {
-                    "cmd": "state",
-                    "project": self.current_project,
-                    "total_passed": self.total_passed,
-                    "total_failed": self.total_failed,
-                }
-                logging.debug(data)
-
-                # reset counters
-                self.this_passed = 0
-                self.this_failed = 0
+                
+                # remove the project
                 await func.removeDir(self.current_project)
-
+                
                 self.current_project = None
 
             except Exception as e:
                 logging.error(f"Error processing project: {e}")
-                await asyncio.sleep(SLEEPTIME)
+            
+            finally:
+                await asyncio.sleep(SLEEPTIME) 
 
+    """
+    run tests from the queue
+    """
     async def run_tests(self):
         """
         run tests from the queue
         """
-        while not self.testQueue.empty():
-
-            if self.current_project is None:
-                logging.warning("No project selected")
-                break
-
-            # get test
-            test = await self.testQueue.get()
-            logging.info(f"Running test: {test}")
-
-            try:
-                # run test
-                result = await func.unitTest(self.current_project, test)
-
-                if result is None:
-                    logging.error(f"Error running test {test}")
-                    continue # pytest error
-
-                passed, failed = result
-                self.total_passed += passed
-                self.total_failed += failed
-
-            except Exception as e:
-                logging.error(f"Error running test {test}: {e}")
-                await asyncio.sleep(SLEEPTIME)
+        
+        if self.current_project is None:
+            logging.warning("No project selected")
+            return 
+        
+        """
+        function to display error
+        """
+        def __error(e):
+            logging.error(f"Error running test on {self.current_project} : {e}")
+            return 
+        
+        try:
+            
+            # execute all tests
+            result = await func.pytestCall(self.current_project)
+            
+            
+            if result is None:
+                __error("")
                 
-        await asyncio.sleep(SLEEPTIME)
-
+            self.module_count += func.countModulesFromFile()
+                
+            passed, failed = result
+            
+            # update the status
+            self.total_passed += passed
+            self.total_failed += failed
+        
+        
+        except Exception as e:
+            __error(e)
+    
+    """
+    stops node protocol
+    """
     def stop(self):
 
         if self.protocol:
@@ -191,15 +224,5 @@ class Node:
 
 if __name__ == "__main__":
 
-    node = Node(8111)
-
-    async def main():
-        logging.info("Starting node...")
-        await node.start()
-        await asyncio.gather(node.listen(), node.process_projects())
-
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        logging.info("Node stopped by user")
-        node.stop()
+    from initNode import init
+    init(8111)

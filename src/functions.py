@@ -3,7 +3,6 @@ computação distribuída - UA
 Thiago Vicente e Diogo Duarte
 """
 
-import pytest
 import xml.etree.ElementTree as ET
 import os
 import asyncio
@@ -46,29 +45,40 @@ async def passedFromFile(filePath:str = "out.xml") -> tuple[int,int] | None:
     # return the amount of passed tests
     return await asyncio.to_thread(parse)
 
-async def unitTest(folder:str,testId:str) -> tuple[int,int] | None:
-    "run pytest on a single test file"
+def countModulesFromFile(xml_path: str = "out.xml") -> int:
+    # print(123)
+    try:
+        tree = ET.parse(xml_path)
+        root = tree.getroot()
+        classnames = {
+            case.attrib.get("classname")
+            for case in root.iter("testcase")
+            if "classname" in case.attrib
+        }
+        return len(classnames)
+    except Exception as e:
+        print(f"Error parsing XML: {e}")
+        return 0
+
+async def pytestCall(folder:str) -> tuple[int,int] | None:
+    "run pytest"
+    # print(f"Running pytestall on {folder}")
 
     # save working directory
     original_cwd = os.getcwd()
     output_filePath = os.path.join( original_cwd,"out.xml")
-    
-    print(f"pytest {testId} --junit-xml={output_filePath}")
 
     try:
-        # change to project root
 
         await asyncio.create_subprocess_exec(
             "pytest",
-            testId,
             f"--junit-xml={output_filePath}",
             "-p",
             "no:terminal",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
-            cwd=folder
+            cwd=folder                          # change working directory
         )
-
 
         return await passedFromFile(output_filePath)
 
@@ -77,39 +87,7 @@ async def unitTest(folder:str,testId:str) -> tuple[int,int] | None:
             return None
 
     # return the amount of passed tests
-    return -1,-1
-
-async def getAllTests(projectPath:str = ".") -> list:
-    "get all tests from a directory"
-
-    if not os.path.exists(projectPath):
-        print(f"Path {projectPath} does not exist.")
-        return []
-    collected:list = []
-
-    # async pytest
-    process = await asyncio.create_subprocess_exec(
-        "pytest", "--collect-only","-q",                                    # deactivate terminal output
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-        cwd=projectPath                                         # set working directory
-    )
-
-    stdout, stderr = await process.communicate()
-
-    # verify if there was an error
-    if stderr:
-        print(f"[pytest stderr]: {stderr.decode()}")
-
-    # read output and identify test ids
-    if stdout:
-        output = stdout.decode()
-        for line in output.splitlines():
-            #print(line)
-            if "::" in line:
-                collected.append(line.strip())
-
-    return collected
+    return None
 
 async def downloadFromGithub(token:str,url:str, dest:str = ".") -> str:
     """
@@ -205,6 +183,8 @@ async def unzipFolder(zipPath:str, dest:str = ".") -> str:
 async def verifyFolder(path:str) -> bool:
     "verify if dir has tests folder"
 
+    import glob
+
     # check if the path exists
     if not os.path.exists(path):
         return False
@@ -214,7 +194,7 @@ async def verifyFolder(path:str) -> bool:
         return False
 
     # check if there are any test files
-    if not os.path.exists(os.path.join(path, "tests", "test_")):
+    if not glob.glob(os.path.join(path, "tests", "test_*.py")):
         return False
 
     return True

@@ -1,11 +1,12 @@
 import socket
 import json
 import argparse
+from messageType import MessageType
 
 
 def main(token:str,url:str):
     data = {
-        "cmd": "evaluation",
+        "cmd": MessageType.EVALUATION.name,
         "type":"url",
         "url": f"{url}",
         "token": f"{token}"
@@ -20,7 +21,7 @@ def main(token:str,url:str):
 
     # Send the data via UDP
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    sock.sendto(to_send, ("192.168.0.3", 8111))
+    sock.sendto(to_send, ("127.0.0.1", 8111))
     sock.close()
 
 if __name__ == "__main__":
