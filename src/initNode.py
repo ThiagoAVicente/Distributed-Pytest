@@ -1,16 +1,30 @@
+# Example for initNode.py
 import asyncio
-from async_node import Node
+from node import Node
+from api import FlaskInterface
 
+# event loop
+loop = asyncio.new_event_loop()
+asyncio.set_event_loop(loop)
 
-def init(port:int):
+# create and initialize the node
+node = Node()
 
-    node = Node(port)
+flask_api = FlaskInterface(node, l=loop)
 
-    async def main():
-        await node.start()
-        await asyncio.gather(node.listen(), node.process_projects())
+api_thread = flask_api.start()
 
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        node.stop()
+# start the node and processing in the event loop
+async def start_node():
+    await node.start()
+
+    processing_task = asyncio.create_task(node.process_queue())
+    listening_task = asyncio.create_task(node.listen())
+    await asyncio.gather(processing_task, listening_task)
+
+# run the node in the event loop
+try:
+    loop.run_until_complete(start_node())
+    loop.run_forever()
+finally:
+    loop.close()
