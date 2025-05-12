@@ -5,13 +5,13 @@ implements the node class
 import asyncio
 import logging
 import os
-import uuid
 from typing import List, Dict, Any, Optional
-from protocol import AsyncProtocol
+from utils.test_runner import TestRunner
+from network.NetworkFacade import NetworkFacade
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-IP:str = "127.0.0.1"
+IP:str = "0.0.0.0"
 
 class Node:
 
@@ -22,7 +22,7 @@ class Node:
         self.is_running:bool = False
 
         # network
-        self.protocol: Optional[AsyncProtocol] = None
+        self.network_facade:Optional[NetworkFacade] = None
         self.peers: Dict[str, tuple[str, int]] = {}
 
         # work variables
@@ -32,6 +32,7 @@ class Node:
         self.projects_processed:int = 0
         self.tests_passed:int = 0
         self.tests_failed:int = 0
+        self.modules:int = 0
 
         self.evaluations:Dict = {}
         self.evaluation_counter:int = 0
@@ -39,7 +40,8 @@ class Node:
     async def start(self):
         "starts the node"
         self.is_running = True
-        self.protocol = await AsyncProtocol.create(self.address)
+        self.network_facade = NetworkFacade(self.address)
+        await self.network_facade.start()
         logging.info(f"Node started at {self.address}")
 
     async def stop(self):
@@ -49,31 +51,52 @@ class Node:
 
     def get_status(self) -> Dict[str, Any]:
         "returns the status of the node"
-        return {
-            "address": self.address,
-            "projects_processed": self.projects_processed,
-            "tests_passed": self.tests_passed,
-            "tests_failed": self.tests_failed
+        res:dict = {
+            "address": f"{self.address[0]}:{self.address[1]}" ,
+            "failed": self.tests_failed,
+            "passed": self.tests_passed,
+            "projects": self.projects_processed,
+            "modules":self.modules,
+            "evaluations": list(self.evaluations.keys()),
         }
+        return res
 
-    async def submit_evalution(self, url:str, token:str = None) -> str:
+    async def submit_evalution_url(self, urls:list[str] = None , token:str = None) -> str:
         "submits a eval to the node"
-        eval_id = str(uuid.uuid4())
-        await self.project_queue.put((eval_id, url, token))
-        logging.info(f"eval {eval_id} submitted to node {self.address}")
+        self.evaluation_counter += 1
+        eval_id = str(self.evaluation_counter)
 
-        # TODO: change this
-        eval_info = {
+        self.evaluations[eval_id] = {
             "id": eval_id,
-            "url": url,
-            "token": token,
-            "status": "pending",
+            "projects": {},
+            "status": "downloading",  #
+            "processed":0,
+            "urls": urls.copy() if urls else []  
         }
+        
+        # Start a background task to download the projects
+        asyncio.create_task(self._download_projects_async(urls, token, eval_id))
 
-        self.evaluations[eval_id] = eval_info
+        logging.info(f"eval {eval_id} submitted to node {self.address}")
 
         # return evaluation id
         return eval_id
+        
+    async def _download_projects_async(self, urls:List[str], token:str, eval_id:str):
+        "downloads the projects in the background"
+        for url in urls:
+            project_name = await self.download_project(url, token, eval_id)
+
+            if project_name:
+                # add to queue
+                await self.project_queue.put((eval_id, project_name))
+                logging.info(f"Project {project_name} added to queue for evaluation {eval_id}")
+            else:
+                logging.error(f"Failed to download project from {url}")
+
+        # update status
+        self.evaluations[eval_id]["status"] = "ready"
+        logging.info(f"All projects downloaded for evaluation {eval_id}")
 
     def get_evaluation_status(self, eval_id: str) -> Optional[Dict[str,Any]]:
         "return the current state of an evaluation"
@@ -86,57 +109,55 @@ class Node:
     async def process_queue(self):
         " process project queue"
 
-        from utils.test_runner import TestRunner
-
         while 2:
             try:
                 # get the next project
-                eval_id, url, token = await self.project_queue.get()
+                eval_id, project_name = await self.project_queue.get()
                 test_runner = TestRunner(os.getcwd())
 
                 # update eval status
-                self.evaluations[eval_id]["status"] = "downloading"
-
                 self.current_project = eval_id
 
-                logging.info(f"Processing project {eval_id} at {self.address}")
+                logging.info(f"Processing project {eval_id}/{project_name} at {self.address}")
 
                 try:
-                    # dowanlaod proweject
-                    res:bool = await self.download_project(url, token, eval_id)
 
-                    if not res:
-                        logging.error(f"Failed to download project {eval_id}")
-                        self.evaluations[eval_id]["status"] = "failed"
-                        self.evaluations[eval_id]["error"] = "Failed to download project"
-                        continue
+                    self.evaluations[eval_id]["projects"][project_name]["status"] = "running"
 
-                    self.evaluations[eval_id]["status"] = "running"
-
-                    result = await test_runner.run_tests(eval_id)
-
+                    result = await test_runner.run_tests(eval_id, project_name)
+                    
+                    # TODO: removewhen on distributed system
+                    self.evaluations[eval_id]["processed"] += 1
+                    await self.keep_clean(eval_id)
+                        
                     if result:
                         #update stats
                         self.projects_processed += 1
                         self.tests_passed += result.passed
                         self.tests_failed += result.failed
+                        self.modules += result.modules
 
                         # update eval status
-                        self.evaluations[eval_id]["status"] = "completed"
-                        self.evaluations[eval_id]["result"] = result.to_dict()
-
+                        self.evaluations[eval_id]["projects"][project_name]["status"] = "completed"
+                        self.evaluations[eval_id]["projects"][project_name]["passed"] += result.passed
+                        self.evaluations[eval_id]["projects"][project_name]["failed"] += result.failed
+                        self.evaluations[eval_id]["projects"][project_name]["modules"] += result.modules
                     else:
                         # update eval status
-                        self.evaluations[eval_id]["status"] = "failed"
-                        self.evaluations[eval_id]["error"] = "Failed to run tests"
-
-                    # clean up project
-                    await self.cleanup_project(eval_id)
+                        self.evaluations[eval_id]["projects"][project_name]["status"] = "failed"
+                        self.evaluations[eval_id]["projects"][project_name]["error"] = "Failed to run tests"
 
                 except Exception as e:
-                    logging.error(f"Error processing project {eval_id}: {e}")
-                    self.evaluations[eval_id]["status"] = "failed"
-                    self.evaluations[eval_id]["error"] = str(e)
+                    logging.error(f"Error processing project {eval_id}/{project_name}: {e}")
+                    self.evaluations[eval_id]["projects"][project_name]["status"] = "failed"
+                    self.evaluations[eval_id]["projects"][project_name]["error"] = str(e)
+                    
+                    # TODO: removewhen on distributed system
+                    self.evaluations[eval_id]["processed"] += 1
+                    await self.keep_clean(eval_id)
+                    
+                    
+                        
 
             except asyncio.CancelledError:
                 break
@@ -145,21 +166,55 @@ class Node:
                 logging.error(f"Error in project processing loop: {e}")
 
             await asyncio.sleep(0.1)
-
-    async def download_project(self, url:str, token:str = None, eval_id:str = "downloaded") -> bool:
+            
+    async def keep_clean(self,eval_id:str) -> None:
+        if self.evaluations[eval_id]["processed"] == \
+            len(self.evaluations[eval_id]["projects"]):
+            # clean up project
+            await self.cleanup_project(eval_id)
+            
+    async def download_project(self, url:str, token:str = None, eval_id:str = "downloaded") -> Optional[str]:
         "downloads the project from the given url"
         try:
             if url.startswith("https://github.com") :
                 from utils.functions import download_github_repo
-                return await download_github_repo(url, token, eval_id)
+                res:Optional[str] =  await download_github_repo(url, token, eval_id)
+
+                if not res:
+                    return None
+                
+                 # Extract just the project name (base name) from the path
+                project_name = os.path.basename(res)
+                
+                # Initialize the evaluation if it doesn't exist
+                if eval_id not in self.evaluations:
+                    self.evaluations[eval_id] = {
+                        "id": eval_id,
+                        "projects": {},
+                        "processed": 0,
+                    }
+                
+                # Make sure projects is a dictionary
+                if "projects" not in self.evaluations[eval_id]:
+                    self.evaluations[eval_id]["projects"] = {}
+                    
+                # Initialize this project in the dictionary
+                self.evaluations[eval_id]["projects"][project_name] = {
+                    "status": "pending",
+                    "passed": 0,
+                    "failed": 0,
+                    "modules": 0,
+                            }
+
+                return project_name
 
             else:
                 logging.error(f"Unsupported url: {url}")
-                return False
+                return None
 
         except Exception as e:
             logging.error(f"Error downloading project: {e}")
-            return False
+            return None
 
     async def cleanup_project(self,eval_id:str):
         " remove project dir "
@@ -178,15 +233,16 @@ class Node:
     async def listen(self):
         "main loop for message listening"
 
-        if not self.protocol:
+        if not self.network_facade or not self.network_facade.is_running():
             raise RuntimeError("Protocol not initialized. Ensure the protocol is started.")
 
         while self.is_running:
             try:
-                message, addr = await self.protocol.recv()
+                message, addr = await self.network_facade.recv()
 
                 # TODO: process message
                 logging.info(f"Received message from {addr}: {message}")
+                self.network_facade.HEARTBEAT(addr, status="free")
 
             except asyncio.CancelledError:
                 break

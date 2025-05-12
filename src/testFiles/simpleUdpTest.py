@@ -7,17 +7,21 @@ import sys
 import os
 sys.path.insert(0, os.path.abspath('.'))
 
-from protocol import AsyncProtocol
+from network.protocol import AsyncProtocol
 import asyncio
 import logging
 
-IP =  "127.0.0.1"
+MYIP =  "0.0.0.0"
+IP = "172.17.0.2"
 PORT = 8000
 myPort = 9000
 
 async def main():
-    protocol = await AsyncProtocol.create((IP, myPort))
+    protocol = await AsyncProtocol.create((MYIP, myPort))
     protocol.send({"menssagem":"teste 123"}, (IP, PORT))
+    
+    res = await protocol.recv()
+    print(res)
     
 if __name__ == "__main__":
     

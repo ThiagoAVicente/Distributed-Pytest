@@ -7,7 +7,6 @@ import os
 import logging
 from typing import Dict, Optional, Any
 import xml.etree.ElementTree as ET
-import time
 
 class TestResult:
     "represents the result of a test"
@@ -41,13 +40,13 @@ class TestRunner:
     def __init__(self, work_dir: str = None):
         self.work_dir = work_dir or os.getcwd()
 
-    async def run_tests(self,eval_id:str) -> Optional[TestResult]:
+    async def run_tests(self,eval_id:str,project_name:str) -> Optional[TestResult]:
         "runs tests and returns results"
 
         try:
 
             # create paths
-            project_path = os.path.join(os.getcwd(), eval_id)
+            project_path = os.path.join(os.getcwd(), eval_id,project_name)
             xml_output = os.path.join(os.getcwd(), f"{eval_id}.xml")
 
             # Verify project path exists
