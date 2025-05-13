@@ -71,11 +71,11 @@ class TestRunner:
                 return None
 
             res = await self.parse_results(xml_output)
-            
+
             # remove xml file
             if os.path.exists(xml_output):
                 os.remove(xml_output)
-                
+
             return res
 
         except Exception as e:
@@ -113,8 +113,8 @@ class TestRunner:
             errors = int(testsuite.attrib["errors"])
             skipped = int(testsuite.attrib["skipped"])
 
-            # get number of modules
-            modules = len(root.findall("testcase"))
+            # get number of modules - corrected to find testcase elements inside testsuite
+            modules = len(testsuite.findall("testcase"))
 
             # calculate passed tests
             passed = tests - (failures + errors + skipped)
