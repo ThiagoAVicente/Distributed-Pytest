@@ -3,9 +3,16 @@ import enum
 
 class MessageType(enum.Enum):
     HEARTBEAT = 1
-    EVALUATION = 2
-    EVALUATION_RESULT = 3
-    EVALUATION_STATUS = 4
+    CONNECT = 2
+    CONNECT_REP = 3
+    
+    TASK_ANNOUNCE = 4
+    TASK_REQUEST = 5
+    TASK_SEND = 6
+    TASK_WORKING = 7
+    
+    
+    
     
 
 class Message:

@@ -5,6 +5,7 @@ implements methods to run pytest
 import asyncio
 import os
 import logging
+import pytest
 from typing import Dict, Optional, Any
 import xml.etree.ElementTree as ET
 
@@ -34,19 +35,22 @@ class TestResult:
             }
 
 
-class TestRunner:
+class PytestRunner:
     " handles test execution"
 
     def __init__(self, work_dir: str = None):
         self.work_dir = work_dir or os.getcwd()
+        env = os.environ.copy()
+        env["PYTHONDONTWRITEBYTECODE"] = "1"
+        self.env = env
 
-    async def run_tests(self,eval_id:str,project_name:str) -> Optional[TestResult]:
+    async def run_tests(self,eval_id:str,project_name:str, module:str) -> Optional[TestResult]:
         "runs tests and returns results"
 
         try:
 
             # create paths
-            project_path = os.path.join(os.getcwd(), eval_id,project_name)
+            project_path = os.path.join(os.getcwd(), eval_id,project_name, "tests")
             xml_output = os.path.join(os.getcwd(), f"{eval_id}.xml")
 
             # Verify project path exists
@@ -57,11 +61,13 @@ class TestRunner:
             # run pytest
             proc = await asyncio.create_subprocess_exec(
                 "pytest",
+                module,
                 f"--junitxml={xml_output}",
                 "-p", "no:terminal",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
-                cwd=project_path
+                cwd=project_path,
+                env = self.env
             )
 
             stdout, stderr = await proc.communicate()
@@ -123,3 +129,42 @@ class TestRunner:
         except Exception as e:
             logging.error(f"Error parsing xml file: {e}")
             return TestResult(0, 0, 0)
+
+    async def get_modules(self,eval_id:int, project_name: str) -> list[str]:
+        "get alll pytest modules in the given path"
+        
+        try:
+            loop = asyncio.get_running_loop()
+            return await loop.run_in_executor(None, self._get_modules, eval_id,project_name)
+        except Exception as e:
+            logging.error(f"Error getting modules: {e}")
+            return None
+    
+    def _get_modules(self,eval_id:int, project_name: str) -> list[str]:
+        
+        # check if path exists
+        path = os.path.join(os.getcwd(), str(eval_id), project_name, "tests")
+        
+        if not os.path.exists(path):
+            logging.error(f"Path does not exist: {path}")
+            return None
+            
+        modules = set() 
+        
+        class Collector:
+            def pytest_collectreport(self, report):
+                if report.passed:
+                    nodeid = report.nodeid
+                    
+                    if nodeid.endswith(".py"):
+                        module = nodeid.split("::")[0].split("/")[-1]
+                        modules.add(module)
+                    
+        
+        pytest.main([
+            '--collect-only',
+            "-p", "no:terminal",
+            path,
+        ], plugins=[Collector()])
+        
+        return list(modules)

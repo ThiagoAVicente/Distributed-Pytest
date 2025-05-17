@@ -1,5 +1,6 @@
 import asyncio
 import json
+import socket
 from typing import Any, Dict, Optional, Tuple
 
 class CDProto:
@@ -7,7 +8,7 @@ class CDProto:
     defines encode and decode methods for the protocol
     """
     
-    HEADER_SIZE = 2
+    HEADER_SIZE = 4
     
     @classmethod 
     def _encode(cls,data:Dict[str,Any]) -> bytes:
@@ -17,14 +18,18 @@ class CDProto:
         :return : bytes header + serialized data
         """
         
-        # serialize data
-        serialized:bytes = json.dumps(data).encode('utf-8')
+        try:
         
-        # prepare header
-        size:int = len(serialized)
-        header:bytes = size.to_bytes(cls.HEADER_SIZE, 'big')
-        
-        return header + serialized
+            # serialize data
+            serialized:bytes = json.dumps(data).encode('utf-8')
+            
+            # prepare header
+            size:int = len(serialized)
+            header:bytes = size.to_bytes(cls.HEADER_SIZE, 'big')
+            
+            return header + serialized
+        except Exception as e:
+            print(f"Error encoding data: {e}")
         
     @classmethod
     def _decode(cls,packet:bytes) -> Dict[str,Any]:
@@ -111,10 +116,15 @@ class AsyncProtocol(asyncio.DatagramProtocol):
         loop = asyncio.get_running_loop()
         protocol = cls()                            # create an async protocol instance
         
+        # create a socket with broadcast option
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+        sock.bind(addr)
+        
         # create udp socket
         await loop.create_datagram_endpoint(
             lambda: protocol,                       # set protocol to handle the communication
-            local_addr=addr                         # sbind sokcetaddress
+            sock= sock                        # sbind sokcetaddress
         )
         
         return protocol                           

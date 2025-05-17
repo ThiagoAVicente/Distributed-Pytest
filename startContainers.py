@@ -36,7 +36,11 @@ def main(new:bool = False, start_id:int = 0, amount:int = 4 ):
         
         # start the container
         print(f"Starting container node{i}...")
-        subprocess.run(["docker", "run","--rm", "-d", f"--name=node{i}", "-e", f"START={1 if new else 0}","-e",f"PORT_ID={i}", "-p", f"800{i}:800{i}", "cd_node"])
+        subprocess.run(["docker", "run","--rm", "-d", f"--name=node{i}", 
+            "--network", "host",
+            "-e", f"START={1 if new else 0}",
+            "-e",f"PORT_ID={i}",  
+           "cd_node"])
         
         
         count += 1

@@ -3,6 +3,7 @@ import asyncio
 import tempfile
 import logging
 import shutil
+import io
 import zipfile
 import urllib.request
 from typing import Optional, Dict
@@ -131,3 +132,55 @@ def _extract_zip(zip_path: str) -> Optional[str]:
         logging.error(f"Error creating temporary directory: {e}")
         return None
         
+def folder2zip(path:str)-> str:
+    "creates a zip file from the current directory"
+    try:
+        # create temp file
+        with tempfile.NamedTemporaryFile(delete=False) as temp_file:
+            temp_file.close()
+            # create zip file
+            with zipfile.ZipFile(temp_file.name, 'w', zipfile.ZIP_DEFLATED) as zipf:
+                for root, dirs, files in os.walk(os.getcwd()):
+                    for file in files:
+                        file_path = os.path.join(root, file)
+                        arcname = os.path.relpath(file_path, os.getcwd())
+                        zipf.write(file_path, arcname)
+            return temp_file.name
+    except Exception as e:
+        logging.error(f"Error creating zip file: {e}")
+        return None
+        
+def file2bytes(path:str)-> bytes:
+    "converts a file to bytes"
+    try:
+        with open(path, 'rb') as f:
+            return f.read()
+    except Exception as e:
+        logging.error(f"Error reading file: {e}")
+        return None
+        
+async def folder_2_bytes(path: str) -> bytes:
+    loop = asyncio.get_running_loop()
+    # folder2zip 
+    zip_path = await loop.run_in_executor(None, folder2zip, path)
+    if not zip_path:
+        return None
+    # file2bytes
+    file_bytes = await loop.run_in_executor(None, file2bytes, zip_path)
+    
+    # remove zip file
+    os.unlink(zip_path)
+    return file_bytes
+
+async def bytes_2_folder(zip_bytes: bytes,target_dir:str = ".") -> bool:
+    "extracs zip from bytes into folder"
+    
+    zip_stream = io.BytesIO(zip_bytes)
+    
+    try:
+        with zipfile.ZipFile(zip_stream) as f:
+            f.extractall(target_dir)
+        return True
+    except Exception as e:
+        logging.error(f"Error extracting zip file from bytes: {e}")
+        return False

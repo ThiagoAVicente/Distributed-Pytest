@@ -1,24 +1,174 @@
+import asyncio
 from network.message import Message, MessageType
 from network.protocol import AsyncProtocol
 from typing import Dict
+import logging
+from uuid import uuid4
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 class NetworkFacade:
     
+    """
+    NetworkFacade is a class that handles the network communication for the node.
+    It uses the AsyncProtocol class to send and receive messages.
+    Implements a mesh network topology.
+    """
+    
+    DISCOVERY_SERVER_PORT:int = 9876
+    
     def __init__(self,addr:tuple[str,int]):
+        self.run:bool = False
         self.node_addr:tuple[str,int] = addr
         self.protocol:AsyncProtocol = None
+        self.peers:Dict[int,tuple[str,int]] = {}
+        self.node_id:int = None
+        self.discovery_task:asyncio.Task = None
 
-    async def start(self):
+    async def start(self) :
         self.protocol = await AsyncProtocol.create(self.node_addr)
+        
+    async def stop(self):
+        if self.protocol is not None:
+            self.protocol = None
+        else:
+            logging.warning("Protocol is already closed or not initialized.")
+        
+        # cancel the sicovery server if it exists
+        if self.discovery_task is not None:
+            self.discovery_task.cancel()
+            self.discovery_task = None
     
     def is_running(self) -> bool:
         return self.protocol is not None
         
-    def HEARTBEAT(self,node_addr:tuple[str,int], status:str = "free") -> None:
-        mssg = Message( MessageType.HEARTBEAT, {"status":status}) 
-        self.protocol.send( mssg.to_dict(), node_addr)
+    async def connect(self):
+        """
+        Connects to a network by sending a message to the discovery server
+        """
+        logging.info(f"Connecting {self.node_addr} to a network")
+        
+        while 1:
+            
+            # contact the discovery server via udp broadcast
+            
+            self.protocol.send(
+                Message(MessageType.CONNECT, {}).to_dict(), 
+                ("255.255.255.255", NetworkFacade.DISCOVERY_SERVER_PORT)
+            )
+
+            # wait for a response
+            try:
+                response = await asyncio.wait_for(self.protocol.recv(), timeout=5)
+                
+                if response is not None:
+                    data, addr = response
+                    if data.get("cmd") == MessageType.CONNECT_REP.name:
+                        # update the peers list
+                        self.peers = {node_id: tuple(addr) for node_id, addr in data["data"]["peers"].items() }
+                        self.peers[data["data"]["id"]] = addr
+                        self.node_id = data["data"]["given_id"]
+                        logging.info(f"Connected to {addr} with peers {self.peers}")
+                        break
+            
+            except asyncio.TimeoutError:
+                logging.warning("No response from discovery server")
+            
+            await asyncio.sleep(1)
+            
+    async def set_peers(self, new_peers:Dict[int,tuple[str,int]]):
+        """
+        updates the list of peers
+        """
+        self.peers = new_peers
+        
+    async def add_peer(self, id:int, peer:tuple[str,int]):
+        """
+        adds a peer to the list of peers
+        """
+        if id not in self.peers:
+            self.peers[id] = peer
+            logging.info(f"Added peer {id} to the list of peers")
+        else:
+            logging.warning(f"Peer {id} already exists in the list of peers")
+    
+    async def start_discovery(self):
+        
+        # check if node was in a network
+        if not self.node_id:
+            self.node_id = uuid4().int
+            
+        # start the discovery server
+        self.run_discovery = True
+        self.discovery_task = asyncio.create_task(self.__discovery_server())
+                
+    async def __discovery_server(self ):
+        """
+        Starts a discovery server to connect to other nodes
+        """
+        
+        # create the discovery server on DISCOVERY_SERVER_PORT
+        discovery_protocol = await AsyncProtocol.create((self.node_addr[0], NetworkFacade.DISCOVERY_SERVER_PORT))
+        logging.info(f"Discovery server started on {self.node_addr[0]}:{NetworkFacade.DISCOVERY_SERVER_PORT}")
+        while 1:
+            # listen to incoming connections
+            try:
+                data, addr = await asyncio.wait_for(discovery_protocol.recv(),timeout = 1)
+
+                if data is not None:
+                    cmd = data.get("cmd")
+                    if cmd == MessageType.CONNECT.name:
+                        # send a connect message to the node
+                        logging.info(f"Received connect message from {addr}")
+                        id = uuid4().int
+                        data = {
+                            "id": self.node_id,
+                            "given_id": id,
+                            "peers": self.peers
+                        }
+                    
+                        self.protocol.send(Message(MessageType.CONNECT_REP, data).to_dict(), addr)
+                    
+                        self.peers[id] = addr
+                
+            except asyncio.TimeoutError:
+                continue
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logging.error(f"Error in discovery server: {e}")
         
     async def recv(self) -> tuple[Dict,tuple[str,int]]:
-        
         return await self.protocol.recv()
         
+    def HEARTBEAT(self) -> None:
+        mssg = Message( MessageType.HEARTBEAT, {"id":self.node_id}) 
+        self.__send_to_all(mssg)
+            
+    def TASK_ANNOUNCE(self) -> None:
+        """
+        announce a new project to the network
+        """
+        mssg = Message(MessageType.TASK_ANNOUNCE, {"id":self.node_id})
+        self.__send_to_all(mssg)
+    
+    def TASK_REQUEST(self, addr:tuple[str,int]) -> None:
+        """
+        request a task from the anouncer
+        """
+        mssg = Message(MessageType.TASK_REQUEST, {"id":self.node_id})
+        self.protocol.send(mssg.to_dict(), addr)
+        
+    def TASK_SEND(self,addr:tuple, info:dict) -> None:
+        """
+        send a task to the requester
+        """
+        mssg = Message(MessageType.TASK_SEND, {"id":self.node_id, "info": info})
+        self.protocol.send(mssg.to_dict(), addr)
+
+    def __send_to_all(self, mssg:Message) -> None:
+        """
+        send a message to all peers
+        """
+        for peer in self.peers.values():
+            self.protocol.send(mssg.to_dict(), peer)
