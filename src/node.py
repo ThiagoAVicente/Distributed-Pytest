@@ -5,8 +5,11 @@ implements the node class
 import asyncio
 import logging
 import os
+import traceback
 import base64
+from uuid import uuid4
 import time
+from functools import partial
 from typing import List, Dict, Any, Optional
 from network.message import MessageType
 from utils.test_runner import PytestRunner
@@ -17,79 +20,236 @@ logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %
 logging.getLogger().setLevel(logging.DEBUG)
 
 IP:str = "0.0.0.0"
+
 URL:int = 1
 ZIP:int = 0
+
+HEARTNEAT_INTERVAL:float = 3
+TASKANNOUNCE_INTERVAL:float = 3
+TASK_SEND_TIMEOUT:float = 5
+
+GIVEN_TASK:int = 1
+DIRECTLY_PROJECT :int = 0
+
+EPS: float = 1e-10
 
 class Node:
 
     def __init__(self, ip:str = IP, port:int = 8000, new_network:bool = False):
 
+        # base node info
         self.address:tuple[str,int] = (ip, port)
         self.is_running:bool = False
         self.is_working:bool = False
+        self.connected:bool = new_network
 
         # network
         self.network_facade:Optional[NetworkFacade] = None
-        self.connected:bool = new_network
-        self.last_heartbeat:float = 0
+        self.network_schema:Dict[str,List[str]] = {} # for each node, its peers
 
-        # work variables
+        # task variables
         self.task_queue:asyncio.Queue = asyncio.Queue()
+        self.task_division:Dict[int,str] = {}
+        self.task_responsabilities:Dict[str,List[Any]] = {} # task_id : [ last_check_up_time, {responsible node : project_name, module_name }}
+        self.task_results:Dict[str,Dict[str,Any]] = {}
+        self.external_task:Optional[tuple[str,str,str]] = None 
+        self.expecting_confirm:Dict[int,float] = {} # task_id : time--> stores the tasks waiting for confirmation 
+
+        # time variables
+        self.last_heartbeat:float = .0
+        self.last_task_announce:float = .0
 
         # stats
         self.projects_processed:int = 0
         self.tests_passed:int = 0
         self.tests_failed:int = 0
         self.modules:int = 0
-
-        self.evaluations:Dict = {}
         self.evaluation_counter:int = 0
+        self.general_status:Dict[str, Any] = {}             # contains the status of every node. is updated on hertbeat
+
+        # results
+        self.evaluations:Dict[str,Dict[str,Any]] = {}       # contains the agregated results and the names of the projects
+        self.projects :Dict[str,Dict[str,Any]] = {}
+
+        # network cache
+        self.network_cache:Dict[str, Dict[str,Any]] = {
+            "evaluations": {}, # contains the evaluations and their status
+            "projects": {},    # contains the projects and their status
+        }
 
     async def start(self):
         "starts the node"
-        self.is_running = True
+
+        # start network
         self.network_facade = NetworkFacade(self.address)
         await self.network_facade.start()
+
+        # if starting a new network, run discovery
         if self.connected:
             await self.network_facade.start_discovery()
+
+        self.is_running = True
         logging.info(f"Node started at {self.address}")
 
     async def stop(self):
         "stops the node"
         self.is_running = False
+
+        # stop network
         if self.network_facade:
             await self.network_facade.stop()
+
         logging.info(f"Node stopped at {self.address}")
 
-    def get_status(self) -> Dict[str, Any]:
-        "returns the status of the node"
-        res:dict = {
-            "address": f"{self.address[0]}:{self.address[1]}" ,
+    def _get_status(self)-> Dict[str, Any]:
+        res:Dict = {
             "failed": self.tests_failed,
             "passed": self.tests_passed,
             "projects": self.projects_processed,
-            "modules":self.modules,
+            "modules": self.modules,
             "evaluations": list(self.evaluations.keys()),
         }
         return res
 
-    async def submit_evalution_url(self, urls:list[str] = None , token:str = None) -> str:
-        "submits a eval to the node"
-        self.evaluation_counter += 1
-        eval_id = str(self.evaluation_counter)
+    def get_network_schema(self) -> Dict[str, List[str]]:
+        "returns the network schema"
+        res = self.network_schema.copy()
+        res[self.address[0]+":"+str(self.address[1])] = self.network_facade.get_peers_ip() # type: ignore
+        return res
 
+    def get_status(self) -> Dict[str, Any]:
+        "returns the status of the node"
+
+        def sum_status(data:Dict)->Dict[str,int]:
+            "sums the status of all nodes"
+
+            evaluations = set()
+
+            res:Dict[str,int] = {
+                "failed": 0,
+                "passed": 0,
+                "projects": 0,
+                "evaluations": 0,
+            }
+
+            for node in data.values():
+                res["failed"] += node["failed"]
+                res["passed"] += node["passed"]
+                res["modules"] += node["modules"]
+
+                evaluations = evaluations.union(set(node["evaluations"]))
+
+            res["projects"] = len( self.network_cache["projects"].keys() )
+            res["evaluations"] = len(evaluations)
+
+            return res
+
+        res = {"all":{},"nodes":[]}
+
+        res["nodes"] = self.general_status
+        res["all"] = sum_status(self.general_status)
+
+        return res
+
+    def _new_evaluation(self,eval_id:str):
+        "creates a new evaluation entry"
         self.evaluations[eval_id] = {
             "id": eval_id,
-            "projects": {},
-            "processed":0,
-            "urls": urls.copy() if urls else []
+            "percentage": 0,
+            "failed": 0,
+            "passed": 0,
+            "modules": 0,
+            "projects": [],
         }
 
+    def _new_project(self, project_name:str):
+        self.projects[project_name] = {
+            "passed": 0,
+            "failed": 0,
+            "modules":0,
+            "module_info":{} # each module must have tests passed, tests failed and time and a status saying if it is
+                             # running, finished or to be run
+        }
+        
+    def _new_module(self,project_name:str, module_name:str):
+        self.projects[project_name]["module_info"][module_name] = {
+            "passed": 0,
+            "failed": 0,
+            "time": 0,
+            "status": "pending",
+        }
+        
+    def _new_task(self,task_id:str,addr:tuple[str,int],project_name:str, module_name:str):
+        "creates a new task entry"
+        self.task_results[task_id] = {
+            "task_id": task_id,
+            "node":addr,
+            "project_name": project_name,
+            "module": module_name,
+            "passed": 0,
+            "failed": 0,
+            "time": 0,
+        }
+            
+    async def submit_evaluation(self, zip_bytes:bytes) -> str:
+
+        # get evaluation id
+        self.evaluation_counter += 1
+        eval_id = self.network_facade.node_id+str(self.evaluation_counter)
+
+        # download evaluation
+        if await f.bytes_2_folder(zip_bytes, os.path.join(os.getcwd(),str(eval_id))):
+
+            self._new_evaluation(eval_id)
+
+            pn = []
+            # get amount of folders inside the zip
+            for project_name in os.listdir(os.path.join(os.getcwd(),str(eval_id))):
+                project_path = os.path.join(os.getcwd(),str(eval_id), project_name)
+                if os.path.isdir(project_path):
+
+                    # add project name to the evaluation
+                    self.evaluations[eval_id]["projects"].append(project_name)
+
+                    # check if project was already evaluated
+                    if project_name in self.network_cache["projects"]:
+
+                        # remove project folder
+                        await self.cleanup_project(eval_id+"/"+project_name)
+                        continue
+
+                    self._new_project(project_name)
+
+                    pn.append(project_name)
+
+            # retrive modules
+            info = {
+                "eval_id": eval_id,
+                "project_names":pn
+            }
+            logging.debug("retrieve tasks")
+            asyncio.create_task(self.retrive_tasks(info, type=ZIP))
+            return eval_id
+
+        return None
+
+    async def submit_evalution_url(self, urls:list[str] = None , token:str = None) -> str:
+        "submits a eval to the node using url and token"
+
+        # get evaluation id
+        self.evaluation_counter += 1
+        eval_id = self.network_facade.node_id+str(self.evaluation_counter)
+
+        # create evaluation entry
+        self._new_evaluation(eval_id)
+
+
+        # ensure urls and token are provided
         if not (urls and token):
             logging.error("No urls or token provided")
             return None
 
-        # Start a background task to download the projects
+        # download projects
         asyncio.create_task(self.retrive_tasks({"eval_id":eval_id,
                                                 "urls":urls,
                                                 "token":token},
@@ -104,49 +264,169 @@ class Node:
         type 0: zip
         type 1: github
         """
-        eval_id = info["eval_id"]
 
         if type == URL:
             token = info["token"]
             urls = info["urls"]
-            projects = {}
+            eval_id = info["eval_id"]
 
             for url in urls:
-                project_name = await self.download_project(url, token, eval_id)
-                if project_name:
-                    projects[project_name] = []
+                logging.debug(f"---------Downloading {url}")
+                res = await self.download_project(url, token)
+
+                if not res:
+                    continue
+                
+                project_name, new_project = res
+                
+                logging.info(f"Project {project_name} downloaded")
+                self.evaluations[eval_id]["projects"].append(project_name)
+                
+                if not new_project:
+                    continue
+
+                test_runner = PytestRunner(os.getcwd())
+                modules = await test_runner.get_modules(project_name)
+                
+                if modules:
+                    logging.debug(f"Modules: {modules}")
+                    self.projects[project_name]["modules"] = len(modules)
+
+                    # add to task queue
+                    for module in modules:
+
+                        # create entry for each module
+                        self._new_module(project_name,module)
+                        await self.task_queue.put((project_name, module))
+                            
+                await asyncio.sleep(0.1)
+
+        elif type == ZIP:
+            projects = info["project_names"]
+            logging.info(f"Projects: {projects}")
+
+            for project_name in projects:
+
                 # get modules per project
-                for project_name in projects.keys():
-                    # logging.debug(f"Project {project_name} downloaded")
+                test_runner = PytestRunner(os.getcwd())
+                modules = await test_runner.get_modules(project_name)
 
-                    test_runner = PytestRunner(os.getcwd())
-                    modules = await test_runner.get_modules(eval_id,project_name)
+                if modules:
+                    self.projects[project_name]["modules"] = len(modules)
 
-                    if modules:
-                        projects[project_name] = modules
+                    # add to task queue
+                    for module in modules:
 
-                        # add to task queue
-                        for module in modules:
-                            await self.task_queue.put((eval_id,project_name, module))
-
-    ## TODO: refactor
-    async def _download_projects_async(self, urls:List[str], token:str, eval_id:str) -> str:
-        "downloads the projects in the background"
-        for url in urls:
-            project_name = await self.download_project(url, token, eval_id)
-
-            if project_name:
-                return project_name
-
-        return None
+                        # create entry for each module
+                        self._new_module(project_name,module)
+                        await self.task_queue.put((project_name, module))
 
     def get_evaluation_status(self, eval_id: str) -> Optional[Dict[str,Any]]:
         "return the current state of an evaluation"
-        return self.evaluations.get(eval_id, None)
 
-    def get_all_evaluations(self) -> Dict[str,Dict[str,Any]]:
+        if eval_id not in self.network_cache["evaluations"]:
+            return None
+
+        eval_data = self.network_cache["evaluations"][eval_id]
+        result = {
+            "id": eval_id,
+            "summary": {
+                "pass_percentage": 0,
+                "fail_percentage": 0,
+                "executed": 0,
+                "executing": 0,
+                "pending": 0,
+                "time_elapsed": 0,  # time in seconds
+            },
+            "projects": {}
+        }
+
+        total_passed = 0
+        total_failed = 0
+        total_modules = 0
+
+        # iterate through projects
+        for project_name in eval_data.get("projects", []):
+            
+            project_data = self.network_cache["projects"].get(project_name, {})
+
+            project_passed = project_data.get("passed", 0)
+            project_failed = project_data.get("failed", 0)
+            total_tests = project_passed + project_failed
+
+            # Calculate project metrics
+            project_result = {
+                "pass_percentage": round(project_passed /  max(EPS,total_tests) * 100, 2),
+                "fail_percentage": round(project_failed /  max(EPS,total_tests) * 100, 2),
+                "score": "--",
+                "modules": {},
+                "executed": 0,
+                "executing": 0,
+                "pending": 0,
+                "time_elapsed": 0
+            }
+
+
+            # iterate through modules
+            for module_name, module_data in project_data.get("module_info", {}).items():
+                module_passed = module_data.get("passed", 0)
+                module_failed = module_data.get("failed", 0)
+                module_total = module_passed + module_failed
+                module_time = module_data.get("time", 0)
+
+                module_result = {
+                    "passed": module_passed,
+                    "failed": module_failed,
+                    "pass_percentage": round(module_passed / max(EPS, module_total) * 100, 2),
+                    "fail_percentage": round(module_failed /  max(EPS,module_total) * 100, 2),
+                    "time": module_time,
+                    "status": module_data.get("status", "pending")
+                }
+
+                # update execution status count
+                if module_data.get("status") == "pending":
+                    project_result["pending"] += 1
+                elif module_data.get("status") == "running":
+                    project_result["executing"] += 1
+                elif module_data.get("status") == "finished":
+                    project_result["executed"] += 1
+
+                # increase time elapsed
+                project_result["time_elapsed"] += module_time
+
+                # add module
+                project_result["modules"][module_name] = module_result
+
+            # if no pending or executing, calculate score
+            if project_result["pending"] == 0 and project_result["executing"] == 0:
+                project_result["score"] = round(project_passed / max(EPS, total_tests) * 20, 2)
+
+            total_passed += project_passed
+            total_failed += project_failed
+            total_modules += project_data.get("modules", 0)
+
+            # add project to final result
+            result["projects"][project_name] = project_result
+
+            # update counts
+            result["summary"]["executed"] += project_result["executed"]
+            result["summary"]["executing"] += project_result["executing"]
+            result["summary"]["pending"] += project_result["pending"]
+            result["summary"]["time_elapsed"] += project_result["time_elapsed"]
+
+        # finish summary
+        total_tests = total_passed + total_failed
+        if total_tests > 0:
+            result["summary"]["total_passed"] = total_passed
+            result["summary"]["total_failed"] = total_failed
+            result["summary"]["pass_percentage"] = round(total_passed / total_tests * 100, 2)
+            result["summary"]["fail_percentage"] = round(total_failed / total_tests * 100, 2)
+
+        return result
+
+    def get_all_evaluations(self) -> List[str]:
         "returns all evaluations"
-        return self.evaluations
+        return list(self.network_cache["evaluations"].keys()) # type: ignore
 
     async def process_queue(self):
         " process task queue"
@@ -155,29 +435,63 @@ class Node:
 
         while self.is_running:
             try:
+                source = DIRECTLY_PROJECT
+                task_id = None
                 # get the next project
-                eval_id, project_name, module = await asyncio.wait_for(self.task_queue.get(), timeout=1)
+                if self.external_task:
+                    project_name, module, task_id = self.external_task
+                    self.external_task = None
+                    source = GIVEN_TASK
+                else:
+                    project_name, module = await asyncio.wait_for(self.task_queue.get(), timeout=1)
                 self.is_working = True
                 test_runner = PytestRunner(os.getcwd())
-                logging.debug(f"Processing {eval_id}::{project_name}::{module}")
+                logging.debug(f"Processing {project_name}::{module}")
 
 
-                result = await test_runner.run_tests(eval_id, project_name, module)
+                result = await test_runner.run_tests(project_name, module)
                 if result:
-                    # update stats
-                    self.tests_passed += result.passed
-                    self.tests_failed += result.failed
-                    self.modules += 1
-
-                    # update evaluation status
-                    if eval_id in self.evaluations:
-                        self.evaluations[eval_id]["projects"][project_name]["passed"] += result.passed
-                        self.evaluations[eval_id]["projects"][project_name]["failed"] += result.failed
-                        self.evaluations[eval_id]["projects"][project_name]["modules"] += 1
-
+                    
+                    if source == DIRECTLY_PROJECT:
+                        logging.debug(f"Processed {project_name}::{module}")
+                        # update stats
+                        self.tests_passed += result.passed
+                        self.tests_failed += result.failed
+                        self.modules += 1
+    
+                        # update project status
+                        self.projects[project_name]["passed"] += result.passed
+                        self.projects[project_name]["failed"] += result.failed
+                        self.projects[project_name]["module_info"][module]["passed"] = result.passed
+                        self.projects[project_name]["module_info"][module]["failed"] = result.failed
+                        self.projects[project_name]["module_info"][module]["status"] = "finished"
+                        self.projects[project_name]["module_info"][module]["time"]   = result.time
+                    
+                    elif source == GIVEN_TASK:
+                        logging.debug(f"Processed {project_name}::{module} from task {task_id}")
+                        # update stats
+                        self.tests_passed += result.passed
+                        self.tests_failed += result.failed
+                        self.modules += 1
+                        
+                        # just to dont get the waning but this is never true
+                        if not task_id:
+                            logging.error("Task id not found")
+                            continue
+                            
+                        # update task status
+                        self.task_results[task_id]["passed"] = result.passed
+                        self.task_results[task_id]["failed"] = result.failed
+                        self.task_results[task_id]["time"] = result.time
+                        
+                        addr = self.task_results[task_id]["node"]
+                        
+                        # respond to the node that requested the task
+                        logging.debug(f"Sending task result to {addr}")
+                        self.network_facade.TASK_RESULT(addr, self.task_results[task_id]) # type: ignore
 
                 else:
-                    logging.error(f"Error processing {eval_id}::{project_name}::{module}")
+                    logging.error(f"Error processing {project_name}::{module}")
 
                 self.is_working = False
 
@@ -196,39 +510,29 @@ class Node:
         logging.debug("Node stopped processing queue")
         return
 
-
-    async def download_project(self, url:str, token:str = None, eval_id:str = "downloaded") -> Optional[str]:
+    async def download_project(self, url:str, token:str = None) -> Optional[tuple[str,bool]]:
         "downloads the project from the given url"
         try:
             if url.startswith("https://github.com") :
                 from utils.functions import download_github_repo
-                res:Optional[str] =  await download_github_repo(url, token, eval_id)
+                res:Optional[str] =  await download_github_repo(url, token)
 
                 if not res:
                     return None
 
-                 # Extract just the project name (base name) from the path
+                # Extract just the project name (base name) from the path
                 project_name = os.path.basename(res)
 
-                # Initialize the evaluation if it doesn't exist
-                if eval_id not in self.evaluations:
-                    self.evaluations[eval_id] = {
-                        "id": eval_id,
-                        "projects": {},
-                    }
+                # check if project name was already processed
+                if project_name in self.network_cache["projects"]:
+                    logging.info(f"Project {project_name} already processed")
+                    # clean project folder
+                    #await self.cleanup_project(project_name)
+                    return project_name,False
 
-                # Make sure projects is a dictionary
-                if "projects" not in self.evaluations[eval_id]:
-                    self.evaluations[eval_id]["projects"] = {}
+                self._new_project(project_name)
 
-                # Initialize this project in the dictionary
-                self.evaluations[eval_id]["projects"][project_name] = {
-                    "passed": 0,
-                    "failed": 0,
-                    "modules": 0,
-                            }
-
-                return project_name
+                return project_name,True
 
             else:
                 logging.error(f"Unsupported url: {url}")
@@ -238,11 +542,11 @@ class Node:
             logging.error(f"Error downloading project: {e}")
             return None
 
-    async def cleanup_project(self,eval_id:str):
+    async def cleanup_project(self,project_name:str):
         " remove project dir "
         try:
             loop = asyncio.get_running_loop()
-            await loop.run_in_executor(None, self._remove_directory, eval_id)
+            await loop.run_in_executor(None, self._remove_directory, project_name)
         except Exception as e:
             logging.error(f"Error cleaning up project: {e}")
             return False
@@ -251,6 +555,22 @@ class Node:
             """Remove a directory and all its contents"""
             import shutil
             shutil.rmtree(path, ignore_errors=True)
+
+    def get_file(self,task_id):
+        "get file from task division"
+        try :
+            # check if task_id is valid
+            task_id = int(task_id)
+        except ValueError:
+            logging.error(f"Invalid task id: {task_id}")
+            return None
+            
+        if task_id in self.task_division:
+            file_b64 = self.task_division[task_id]
+            self.expecting_confirm[task_id] = time.time()
+            return {"bytes":file_b64}
+        else:
+            return None
 
     async def listen(self):
         "main loop for message listening"
@@ -274,68 +594,25 @@ class Node:
         while self.is_running:
             await asyncio.sleep(0.1)
 
+            # heartbeat
+            #logging.debug(time.time() - self.last_heartbeat)
+            if time.time() - self.last_heartbeat > HEARTNEAT_INTERVAL:
+                try:
+                    self.heartbeat()
+                except Exception as e:
+                    logging.error(f"Error in heartbeat: {e}")
+
+            # anounce task
+            if not self.task_queue.empty() and time.time() - self.last_task_announce > TASKANNOUNCE_INTERVAL:
+                self.network_facade.TASK_ANNOUNCE()
+                logging.debug("Sending task announce")
+                self.last_task_announce = time.time()
+
+            # try to read message
             try:
                 message, addr = await asyncio.wait_for(self.network_facade.recv(),timeout =1)
 
-                cmd = message.get("cmd")
-
-                if cmd == MessageType.TASK_ANNOUNCE.name:
-                    # process project announce
-                    logging.debug(f"Project announce from {addr}: {message}")
-                    if not self.is_working:
-                        self.network_facade.TASK_REQUEST(addr)
-
-                elif cmd == MessageType.TASK_REQUEST.name:
-                    # process task request
-                    logging.debug(f"Task request from {addr}: {message}")
-                    if not self.task_queue.empty():
-                        eval_id, project_name, module = await self.task_queue.get()
-                        file_bytes:bytes = await f.folder_2_bytes(os.path.join(os.getcwd(),str(eval_id), project_name))
-                        file_b64 = base64.b64encode(file_bytes).decode('utf-8')
-                        logging.debug(f"ZIP file size: {len(file_bytes)} bytes, base64 size: {len(file_b64)} bytes")
-                        data = {
-                            
-                            "eval_id": eval_id,
-                            "project_name": project_name,
-                            "module": module,
-                            "file": file_b64,
-                        }
-                        self.network_facade.TASK_SEND(addr,data)
-                        logging.debug(f"Sending task {eval_id}::{project_name}::{module} to {addr}")
-
-                elif cmd == MessageType.TASK_SEND.name:
-                    logging.info(f"Received task from {addr}")
-
-
-                    # create folder
-                    eval_id = message["data"]["info"]["eval_id"]
-                    project_name = message["data"]["info"]["project_name"]
-                    module = message["data"]["info"]["module"]
-
-                    file_b64 = message["data"]["info"]["file"]
-                    file_bytes = base64.b64decode(file_b64)
-                    
-                    
-                    res = await f.bytes_2_folder(file_bytes, os.path.join(os.getcwd(),str(eval_id), project_name))
-
-                    if res:
-
-                        # put tast in queue
-                        if eval_id not in self.evaluations:
-                            self.evaluations[eval_id] = {
-                                "id": eval_id,
-                                "projects": {},
-                            }
-                            self.evaluations[eval_id]["projects"][project_name] = {
-                                "passed": 0,
-                                "failed": 0,
-                                "modules": 0,
-                            }
-
-                        await self.task_queue.put((eval_id, project_name, module))
-                            
-                elif cmd == MessageType.HEARTBEAT.name:
-                    logging.info(f"Received heartbeat from {addr}")
+                await self.process_message(message, addr)
 
             except asyncio.CancelledError:
                 break
@@ -343,18 +620,229 @@ class Node:
                 pass
 
             except Exception as e:
-                logging.error(f"Error in message listening loop: {e}")
+                logging.error(f"Error in message listening loop: {traceback.format_exc()}")
 
-            # heartbeat
-            if time.time() - self.last_heartbeat > 5:
-                # send heartbeat
-                self.network_facade.HEARTBEAT()
-                logging.debug("Sending heartbeat ")
-                self.last_heartbeat = time.time()
 
-            # anounce project
-            if not self.task_queue.empty():
-                self.network_facade.TASK_ANNOUNCE()
 
         logging.debug("Node stopped listening")
         return
+    
+    def heartbeat(self):
+        # send heartbeat
+
+        # group node cache
+        # -addr ( string with "ip:port")
+        # -peers_ip ( a list )
+        # -evaluations ( self.evaluations )
+        # -projects ( self.projects )
+        # -node_stats
+
+        node_cache = {
+            "addr": f"{self.address[0]}:{self.address[1]}",
+            "peers_ip": self.network_facade.get_peers_ip(), # type: ignore
+            "evaluations": self.evaluations,
+            "projects": self.projects,
+            "node_stats": self._get_status(),
+        }
+        
+        # update node cache also
+        for eval_id,eval_data in self.evaluations.items():
+            self.network_cache["evaluations"][eval_id]=eval_data
+
+        for project_name,project_data in self.projects.items():
+            self.network_cache["projects"][project_name]=project_data
+
+        self.network_facade.HEARTBEAT(node_cache) # type: ignore
+        #logging.debug(f"Node cache: {self.network_cache}")
+        
+        logging.debug("Sending heartbeat ")
+        self.last_heartbeat = time.time()
+
+    async def process_message(self, message:dict, addr:tuple[str,int]):
+
+        cmd = message.get("cmd",None)
+        if not cmd:
+            logging.error(f"Invalid message from {addr}: {message}")
+            return
+
+        if cmd == MessageType.TASK_ANNOUNCE.name:
+            # process project announce
+            logging.debug(f"Project announce from {addr}")
+            if not self.is_working and self.task_queue.empty():
+                logging.debug("Requesting task")
+                self.network_facade.TASK_REQUEST(addr) # type: ignore
+
+        elif cmd == MessageType.TASK_REQUEST.name:
+            # process task request
+            logging.debug(f"Task request from {addr}: {message}")
+            await self._handle_task_request(message, addr)
+
+        elif cmd == MessageType.TASK_SEND.name:
+            logging.info(f"Received task from {addr}")
+            await self._handle_task_send(message, addr)
+
+
+        elif cmd == MessageType.HEARTBEAT.name:
+            logging.info(f"Received heartbeat from {addr}")
+            await self._handle_heartbeat(message, addr)
+            
+        elif cmd == MessageType.TASK_RESULT.name:
+            await self._handle_task_result(message, addr)
+           
+        elif cmd == MessageType.TASK_CONFIRM.name:
+            # confirm task
+           await self._handle_task_confirm(message, addr)
+           
+    # handlers
+    async def _handle_task_request(self, message:dict, addr:tuple[str,int]):
+        if not self.task_queue.empty():
+            project_name, module = await self.task_queue.get()
+            file_bytes:bytes = await f.folder_2_bytes(os.path.join(os.getcwd(),project_name))
+            file_b64 = base64.b64encode(file_bytes).decode('utf-8')
+
+            task_id:int = uuid4().int
+            logging.debug(f"Task id: {task_id}")
+            self.task_division[task_id] = file_b64
+
+            data = {
+                "project_name": project_name,
+                "module": module,
+                "type": ZIP,
+                "task_id": task_id,
+            }
+            self.network_facade.TASK_SEND(addr,data) # type: ignore
+            logging.debug(f"Sending task {project_name}::{module} to {addr}")
+
+    async def _handle_task_working(self,message:dict,addr:tuple[str,int]):
+        task_id = message["data"]["task_id"]
+        if task_id in self.task_responsabilities:
+            if addr == self.task_responsabilities[task_id][1]:
+                # update time
+                self.task_responsabilities[task_id][0] = time.time()
+
+    async def _handle_task_confirm(self, message:dict, addr:tuple[str,int]):
+        task_id = message["data"]["task_id"]
+        project_name = message["data"]["project_name"]
+        module = message["data"]["module"]
+        if task_id in self.expecting_confirm:
+            del self.expecting_confirm[task_id]
+            
+            # mark responsability
+            self.task_responsabilities[task_id] = [time.time(), addr,project_name, module]
+            
+            logging.debug(f"Task {task_id} confirmed")
+        else:
+            logging.error(f"Task {task_id} not found in expecting confirm")
+
+    async def _handle_task_send(self, message:dict, addr:tuple[str,int]):
+
+        # project id is not needed due to cahce :^)
+
+        project_name = message["data"]["info"]["project_name"]
+        module = message["data"]["info"]["module"]
+        type = message["data"]["info"]["type"]
+
+        if type == ZIP:
+
+            task_id = message["data"]["info"]["task_id"]
+
+            def get_file_bytes(task_id) -> bytes:
+                import requests
+
+                try:
+                    url = f"http://{addr[0]}:{addr[1]}/file/{task_id}"
+                    headers = {
+                        "Content-Type": "application/json",
+                    }
+                    response = requests.get(url, headers=headers)
+                    if response.status_code == 200:
+                        file_b64 = response.json()["bytes"]
+                        file_bytes = base64.b64decode(file_b64)
+                        return file_bytes
+                    else:
+                        logging.error(f"Error getting file: {response.status_code}")
+                        return None
+                except Exception:
+                    return None
+
+            file_bytes:bytes = None
+            # get file bytes
+            try:
+                loop = asyncio.get_running_loop()
+                file_bytes = await loop.run_in_executor(None, partial(get_file_bytes, task_id))
+            except Exception:
+                pass
+
+            if file_bytes:
+                await f.bytes_2_folder(file_bytes, os.path.join(os.getcwd(), project_name))
+                self.external_task = ((project_name, module,task_id))
+                self._new_task(task_id, addr,project_name,module)
+                
+                # notify node 
+                self.network_facade.TASK_CONFIRM(addr, # type: ignore
+                    {"task_id": task_id, "project_name": project_name, "module": module}) 
+    
+    async def _handle_task_result(self, message:dict, addr:tuple[str,int]):
+        
+        task_id = message["data"]["task_id"]
+        project_name = message["data"]["project_name"]
+        module = message["data"]["module"]
+        
+        if task_id in self.task_responsabilities:
+            if addr == self.task_responsabilities[task_id][1]:
+                
+                # remove responsability entry
+                del self.task_responsabilities[task_id]
+                
+                # update project status
+                self.projects[project_name]["module_info"][module]["passed"] = message["data"]["passed"]
+                self.projects[project_name]["module_info"][module]["failed"] = message["data"]["failed"]
+                self.projects[project_name]["module_info"][module]["status"] = "finished"
+                self.projects[project_name]["module_info"][module]["time"] = message["data"]["time"]
+                self.projects[project_name]["passed"] += message["data"]["passed"]
+                self.projects[project_name]["failed"] += message["data"]["failed"]
+                
+                # inform node that sucessfully finished
+                logging.debug(f"Recieved task result from {addr}")
+                self.network_facade.TASK_RESULT_REP(addr, # type: ignore
+                    {"task_id": task_id})
+
+    async def _handle_task_result_rep(self, message:dict, addr:tuple[str,int]):
+        task_id = message["data"]["task_id"]
+        if task_id in self.task_results:
+            if addr == self.task_results[task_id]["node"]:
+                # remove task entry
+                del self.task_results[task_id]
+
+    async def _handle_heartbeat(self, message:dict, addr:tuple[str,int]):
+
+        # group node cache
+        # -addr ( string with "ip:port")
+        # -peers_ip ( a list )
+        # -evaluations ( self.evaluations )
+        # -projects ( self.projects )
+        # -node_stats
+        
+        saddr = message["data"]["cache"]["addr"]
+        peers_ip = message["data"]["cache"]["peers_ip"]
+        evaluations = message["data"]["cache"]["evaluations"]
+        projects = message["data"]["cache"]["projects"]
+        node_stats = message["data"]["cache"]["node_stats"]
+        
+        #logging.debug(message)
+        
+        # update network cache
+        self.network_schema[saddr] = peers_ip
+        for evaluation_id , evaluation in evaluations.items():
+            self.network_cache["evaluations"][evaluation_id] = evaluation
+        
+        self.general_status[saddr] = node_stats
+
+        for project_name, project in projects.items():
+            
+            self.network_cache["projects"][project_name]= project
+        
+        
+        # TODO: update node last heartbeat
+        
+        logging.debug("Updated node cache")

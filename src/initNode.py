@@ -42,7 +42,7 @@ if __name__ == "__main__":
 
 
     # create and initialize the node
-    node = Node(port=int(os.environ.get("PORT_ID", 0)) + 8000, 
+    node = Node(port=25000, 
                 new_network=bool(int(os.environ.get("START", 1))))
 
     ## uncomment to start the flask api

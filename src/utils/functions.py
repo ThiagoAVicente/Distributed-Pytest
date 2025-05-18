@@ -8,9 +8,9 @@ import zipfile
 import urllib.request
 from typing import Optional, Dict
 
-async def download_github_repo(url: str, token: str = None, eval_id:str = "downloaded") -> Optional[str]:
+async def download_github_repo(url: str, token: str = None,) -> Optional[str]:
     " download a github repository"
-    logging.info(f"Downloading {url} to {eval_id}")
+    logging.info(f"Downloading {url}")
     
     try:
             # validate url
@@ -31,13 +31,6 @@ async def download_github_repo(url: str, token: str = None, eval_id:str = "downl
             
             if not user or not repo:
                 return None
-            
-            # Get absolute path for eval_id directory
-            eval_dir = os.path.abspath(eval_id)
-            
-            # make eval_id directory if it doesn't exist
-            if not os.path.exists(eval_dir):
-                os.makedirs(eval_dir)
             
             # prepare message
             zip_url = f"https://api.github.com/repos/{user}/{repo}/zipball"
@@ -66,7 +59,6 @@ async def download_github_repo(url: str, token: str = None, eval_id:str = "downl
                         None,
                         lambda: _extract_zip(zip_path)
                     )
-            
             # clean up temp zip file
             os.unlink(zip_path)
             
@@ -81,18 +73,21 @@ async def download_github_repo(url: str, token: str = None, eval_id:str = "downl
                 return None
                 
             repo_dir = os.path.join(extract_dir, extracted_contents[0])
-            target_dir = os.path.join(eval_dir, repo)
+            target_dir = os.path.join(os.getcwd(), repo)
             
-            # If target already exists, remove it
+            # If target already exists dont unzip
             if os.path.exists(target_dir):
-                shutil.rmtree(target_dir)
+                logging.info(f"Target directory {target_dir} already exists")
+                shutil.rmtree(extract_dir, ignore_errors=True)
+                return target_dir
                 
             # Move the repo directory to the target
             shutil.move(repo_dir, target_dir)
             
             # Clean up the temp directory
             shutil.rmtree(extract_dir)
-            
+            logging.info(f"Removed temp directory {extract_dir}")
+            logging.info(f"Downloaded and extracted {url} to {target_dir}")
             return target_dir
                 
     except Exception as e:
@@ -135,17 +130,38 @@ def _extract_zip(zip_path: str) -> Optional[str]:
 def folder2zip(path:str)-> str:
     "creates a zip file from the current directory"
     try:
-        # create temp file
-        with tempfile.NamedTemporaryFile(delete=False) as temp_file:
-            temp_file.close()
-            # create zip file
-            with zipfile.ZipFile(temp_file.name, 'w', zipfile.ZIP_DEFLATED) as zipf:
-                for root, dirs, files in os.walk(os.getcwd()):
+        # check if path is a directory
+        abs_path = os.path.abspath(path)
+        if not os.path.isdir(abs_path):
+            logging.error(f"Path {path} is not a directory")
+            return None
+
+        # create zip path
+        import uuid
+        folder_name = os.path.basename(abs_path.rstrip(os.sep))
+        zip_filename = f"{folder_name}_{uuid.uuid4().hex[:8]}.zip"
+        zip_path = os.path.join(os.getcwd(), zip_filename)
+    
+        try:
+            with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+                for root, dirs, files in os.walk(abs_path):
+                    dirs[:] = [d for d in dirs if 'cache' not in d.lower()]
                     for file in files:
+                        if 'cache' in file.lower():
+                            continue
                         file_path = os.path.join(root, file)
-                        arcname = os.path.relpath(file_path, os.getcwd())
+                        
+                        # Preserve the top-level folder in the archive
+                        arcname = os.path.join(
+                            folder_name,
+                            os.path.relpath(file_path, abs_path)
+                        )
                         zipf.write(file_path, arcname)
-            return temp_file.name
+            return zip_path
+        except Exception as e:
+            logging.error(f"Failed to zip folder {abs_path}: {e}")
+            return None
+
     except Exception as e:
         logging.error(f"Error creating zip file: {e}")
         return None
@@ -172,15 +188,43 @@ async def folder_2_bytes(path: str) -> bytes:
     os.unlink(zip_path)
     return file_bytes
 
-async def bytes_2_folder(zip_bytes: bytes,target_dir:str = ".") -> bool:
+async def bytes_2_folder(zip_bytes: bytes, target_dir: str = ".") -> bool:
     "extracs zip from bytes into folder"
-    
-    zip_stream = io.BytesIO(zip_bytes)
-    
+
+    temp_dir = tempfile.mkdtemp()
+
     try:
+        # extract the zip
+        zip_stream = io.BytesIO(zip_bytes)
         with zipfile.ZipFile(zip_stream) as f:
-            f.extractall(target_dir)
+            f.extractall(temp_dir)
+
+        # get top lever folder name inside the zip
+        extracted_contents = os.listdir(temp_dir)
+        if not extracted_contents:
+            logging.error("Extracted zip is empty")
+            shutil.rmtree(temp_dir, ignore_errors=True)
+            return False
+
+        main_folder = os.path.join(temp_dir, extracted_contents[0])
+
+        # get folder name
+        folder_name = os.path.basename(main_folder)
+        final_target = os.path.join(target_dir, folder_name)
+
+        # check if the target folder already exists
+        if os.path.exists(final_target):
+            logging.info(f"Target directory {final_target} already exists, skipping extraction")
+            shutil.rmtree(temp_dir, ignore_errors=True)
+            return False
+
+        # move project folder 
+        shutil.move(main_folder, target_dir)
+
+        shutil.rmtree(temp_dir, ignore_errors=True)
         return True
+
     except Exception as e:
         logging.error(f"Error extracting zip file from bytes: {e}")
+        shutil.rmtree(temp_dir, ignore_errors=True)
         return False

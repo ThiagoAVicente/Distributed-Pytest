@@ -21,8 +21,8 @@ class NetworkFacade:
         self.run:bool = False
         self.node_addr:tuple[str,int] = addr
         self.protocol:AsyncProtocol = None
-        self.peers:Dict[int,tuple[str,int]] = {}
-        self.node_id:int = None
+        self.peers:Dict[str,tuple[str,int]] = {}
+        self.node_id:str = None
         self.discovery_task:asyncio.Task = None
 
     async def start(self) :
@@ -76,13 +76,13 @@ class NetworkFacade:
             
             await asyncio.sleep(1)
             
-    async def set_peers(self, new_peers:Dict[int,tuple[str,int]]):
+    async def set_peers(self, new_peers:Dict[str,tuple[str,int]]):
         """
         updates the list of peers
         """
         self.peers = new_peers
         
-    async def add_peer(self, id:int, peer:tuple[str,int]):
+    async def add_peer(self, id:str, peer:tuple[str,int]):
         """
         adds a peer to the list of peers
         """
@@ -92,11 +92,17 @@ class NetworkFacade:
         else:
             logging.warning(f"Peer {id} already exists in the list of peers")
     
+    def get_peers_ip(self) -> list[str]:
+        """
+        returns the list of peers ip addresses and port on format "ip:port"
+        """
+        return [f"{peer[0]}:{peer[1]}" for peer in self.peers.values()]
+    
     async def start_discovery(self):
         
         # check if node was in a network
         if not self.node_id:
-            self.node_id = uuid4().int
+            self.node_id = uuid4().hex
             
         # start the discovery server
         self.run_discovery = True
@@ -120,7 +126,7 @@ class NetworkFacade:
                     if cmd == MessageType.CONNECT.name:
                         # send a connect message to the node
                         logging.info(f"Received connect message from {addr}")
-                        id = uuid4().int
+                        id = uuid4().hex
                         data = {
                             "id": self.node_id,
                             "given_id": id,
@@ -141,8 +147,8 @@ class NetworkFacade:
     async def recv(self) -> tuple[Dict,tuple[str,int]]:
         return await self.protocol.recv()
         
-    def HEARTBEAT(self) -> None:
-        mssg = Message( MessageType.HEARTBEAT, {"id":self.node_id}) 
+    def HEARTBEAT(self, cache:Dict) -> None:
+        mssg = Message( MessageType.HEARTBEAT, {"id":self.node_id, "cache": cache}) 
         self.__send_to_all(mssg)
             
     def TASK_ANNOUNCE(self) -> None:
@@ -164,6 +170,27 @@ class NetworkFacade:
         send a task to the requester
         """
         mssg = Message(MessageType.TASK_SEND, {"id":self.node_id, "info": info})
+        self.protocol.send(mssg.to_dict(), addr)
+    
+    def TASK_CONFIRM(self, addr:tuple, content:Dict) -> None:
+        """
+        confirm a task to the requester
+        """
+        mssg = Message(MessageType.TASK_CONFIRM, content)
+        self.protocol.send(mssg.to_dict(), addr)
+    
+    def TASK_RESULT(self, addr:tuple, result:dict) -> None:
+        """
+        send the result of a task to the requester
+        """
+        mssg = Message(MessageType.TASK_RESULT, result)
+        self.protocol.send(mssg.to_dict(), addr)
+
+    def TASK_RESULT_REP(self, addr:tuple, result:dict) -> None:
+        """
+        send the result of a task to the requester
+        """
+        mssg = Message(MessageType.TASK_RESULT_REP, result)
         self.protocol.send(mssg.to_dict(), addr)
 
     def __send_to_all(self, mssg:Message) -> None:

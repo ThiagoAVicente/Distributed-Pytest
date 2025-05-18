@@ -1,7 +1,7 @@
 import asyncio
 import json
 import socket
-from typing import Any, Dict, Optional, Tuple
+from typing import Dict, Any, Tuple
 
 class CDProto:
     """
@@ -103,8 +103,11 @@ class AsyncProtocol(asyncio.DatagramProtocol):
             raise RuntimeError("Transport is not initialized. Ensure the protocol is started.")
                 
         # encode
-        packet:bytes = CDProto._encode(data)
+        packet:bytes|None = CDProto._encode(data)
         
+        if not packet:
+            raise ValueError("Failed to encode data")
+            
         # send data
         self.transport.sendto(packet, target_addr)
              

@@ -10,7 +10,10 @@ class MessageType(enum.Enum):
     TASK_REQUEST = 5
     TASK_SEND = 6
     TASK_WORKING = 7
+    TASK_RESULT = 8
     
+    TASK_CONFIRM = 9
+    TASK_RESULT_REP = 10    
     
     
     

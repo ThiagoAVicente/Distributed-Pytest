@@ -71,24 +71,29 @@ class FlaskInterface:
                     logging.error(f"Error submitting evaluation: {e}")
                     return jsonify({"error": str(e)}), 500
             
-            # elif request.content_type == 'multipart/form-data':
+            elif request.content_type.startswith('multipart/form-data'):
+                file = request.files['file']
+                future = asyncio.run_coroutine_threadsafe(
+                    self.node.submit_evaluation(file.read()),
+                    self.event_loop
+                )
+                eval_id = future.result()
+                if not eval_id:
+                    return jsonify({"error": "Failed to submit evaluation"}), 500
+                    
+                return jsonify({
+                    "status": "submitted",
+                    "eval_id": eval_id,
+                }), 200
                 
-            return jsonify({"message": "TODO"}), 200
+            return jsonify({"error": "Invalid content type"}), 400
 
         @self.app.route("/evaluation", methods=["GET"])
         def list_evaluations():
             evals = self.node.get_all_evaluations()
 
-            evaluations = []
-            for eval_id, eval_info in evals.items():
-                evaluations.append({
-                    "id": eval_id,
-                    "url": eval_info.get("url"),
-                    "status": eval_info.get("status"),
-                    "timestamp": eval_info.get("timestamp")
-                })
 
-            return jsonify(evaluations), 200
+            return jsonify(evals), 200
 
         @self.app.route("/evaluation/<id>", methods=["GET"])
         def get_evaluation(id):
@@ -107,16 +112,19 @@ class FlaskInterface:
             # TODO: add info about other nodes 
             return jsonify(status), 200
 
+        @self.app.route("/file/<task_id>", methods=["GET"])
+        def get_file(task_id):
+            file = self.node.get_file(task_id)
+
+            if not file:
+                return jsonify({"error": "File not found"}), 404
+
+            return jsonify(file), 200
+
         @self.app.route("/network", methods=["GET"])
         def get_network():
             
-            res:dict = {
-                f"{self.node.address[0]}:{self.node.address[1]}": [
-                    f"{n[0]}:{n[1]}" for n in self.node.peers 
-                ]
-            }
-            
-            # TODO: add info about other nodes
+            res = self.node.get_network_schema()
             
             return jsonify(res), 200
 
