@@ -7,7 +7,7 @@ import logging
 
 import os
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
 
 loop = asyncio.new_event_loop()
 asyncio.set_event_loop(loop)
@@ -42,8 +42,12 @@ if __name__ == "__main__":
 
 
     # create and initialize the node
-    node = Node(port=25000, 
-                new_network=bool(int(os.environ.get("START", 1))))
+    
+    # get node address from env variable
+    host_ = os.environ.get("HOST",0)
+    
+    node = Node(port=int(os.environ.get("NODE_PORT")),# type:ignore 
+        host=str(host_) )
 
     ## uncomment to start the flask api
     flask_api = FlaskInterface(node, l=loop)

@@ -7,14 +7,14 @@ import threading
 import logging
 import asyncio
 from node import Node
-
+import os
 
 class FlaskInterface:
     "flask web api"
 
     def __init__(self, node: Node, http_port: int = None, l = None):
         self.node = node
-        self.http_port = http_port or node.address[1]
+        self.http_port = os.environ.get("API_PORT")
         self.event_loop = l or asyncio.get_event_loop()
         # create app
         self.app = Flask(__name__)

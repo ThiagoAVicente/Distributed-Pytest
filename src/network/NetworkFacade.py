@@ -14,16 +14,14 @@ class NetworkFacade:
     It uses the AsyncProtocol class to send and receive messages.
     Implements a mesh network topology.
     """
-    
-    DISCOVERY_SERVER_PORT:int = 9876
-    
-    def __init__(self,addr:tuple[str,int]):
+        
+    def __init__(self,addr:tuple[str,int],start:bool = False):
         self.run:bool = False
         self.node_addr:tuple[str,int] = addr
-        self.protocol:AsyncProtocol = None
+        self.protocol:AsyncProtocol = None # type: ignore
         self.peers:Dict[str,tuple[str,int]] = {}
-        self.node_id:str = None
-        self.discovery_task:asyncio.Task = None
+        self.node_id:str = uuid4().hex if start else None # type: ignore
+        self.discovery_task:asyncio.Task = None # type: ignore
 
     async def start(self) :
         self.protocol = await AsyncProtocol.create(self.node_addr)
@@ -42,11 +40,20 @@ class NetworkFacade:
     def is_running(self) -> bool:
         return self.protocol is not None
         
-    async def connect(self):
+    def CONNECT_REP(self,addr:tuple[str,int]) ->None:
+        """
+        send a connect response to the discovery server
+        """
+        new_id = uuid4().hex
+        mssg = Message(MessageType.CONNECT_REP, {"peers": self.peers, "id": self.node_id, "given_id": new_id})
+        self.peers[new_id] = addr
+        self.protocol.send(mssg.to_dict(), addr)
+    
+    async def connect(self,haddr:tuple):
         """
         Connects to a network by sending a message to the discovery server
         """
-        logging.info(f"Connecting {self.node_addr} to a network")
+        logging.info(f"Connecting {self.node_addr} to a network in {haddr}")
         
         while 1:
             
@@ -54,7 +61,7 @@ class NetworkFacade:
             
             self.protocol.send(
                 Message(MessageType.CONNECT, {}).to_dict(), 
-                ("255.255.255.255", NetworkFacade.DISCOVERY_SERVER_PORT)
+                haddr
             )
 
             # wait for a response
@@ -97,58 +104,12 @@ class NetworkFacade:
         returns the list of peers ip addresses and port on format "ip:port"
         """
         return [f"{peer[0]}:{peer[1]}" for peer in self.peers.values()]
-    
-    async def start_discovery(self):
-        
-        # check if node was in a network
-        if not self.node_id:
-            self.node_id = uuid4().hex
-            
-        # start the discovery server
-        self.run_discovery = True
-        self.discovery_task = asyncio.create_task(self.__discovery_server())
-                
-    async def __discovery_server(self ):
-        """
-        Starts a discovery server to connect to other nodes
-        """
-        
-        # create the discovery server on DISCOVERY_SERVER_PORT
-        discovery_protocol = await AsyncProtocol.create((self.node_addr[0], NetworkFacade.DISCOVERY_SERVER_PORT))
-        logging.info(f"Discovery server started on {self.node_addr[0]}:{NetworkFacade.DISCOVERY_SERVER_PORT}")
-        while 1:
-            # listen to incoming connections
-            try:
-                data, addr = await asyncio.wait_for(discovery_protocol.recv(),timeout = 1)
-
-                if data is not None:
-                    cmd = data.get("cmd")
-                    if cmd == MessageType.CONNECT.name:
-                        # send a connect message to the node
-                        logging.info(f"Received connect message from {addr}")
-                        id = uuid4().hex
-                        data = {
-                            "id": self.node_id,
-                            "given_id": id,
-                            "peers": self.peers
-                        }
-                    
-                        self.protocol.send(Message(MessageType.CONNECT_REP, data).to_dict(), addr)
-                    
-                        self.peers[id] = addr
-                
-            except asyncio.TimeoutError:
-                continue
-            except asyncio.CancelledError:
-                break
-            except Exception as e:
-                logging.error(f"Error in discovery server: {e}")
-        
+   
     async def recv(self) -> tuple[Dict,tuple[str,int]]:
         return await self.protocol.recv()
         
-    def HEARTBEAT(self, cache:Dict) -> None:
-        mssg = Message( MessageType.HEARTBEAT, {"id":self.node_id, "cache": cache}) 
+    def HEARTBEAT(self) -> None:
+        mssg = Message( MessageType.HEARTBEAT,{}) 
         self.__send_to_all(mssg)
             
     def TASK_ANNOUNCE(self) -> None:
@@ -192,6 +153,13 @@ class NetworkFacade:
         """
         mssg = Message(MessageType.TASK_RESULT_REP, result)
         self.protocol.send(mssg.to_dict(), addr)
+        
+    def CACHE_UPDATE(self, cache:Dict)->None:
+        """
+        send cache to all peers
+        """
+        mssg = Message(MessageType.CACHE_UPDATE, cache)
+        self.__send_to_all(mssg)
 
     def __send_to_all(self, mssg:Message) -> None:
         """

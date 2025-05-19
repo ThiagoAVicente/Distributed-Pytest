@@ -5,7 +5,6 @@ implements methods to run pytest
 import asyncio
 import os
 import logging
-import pytest
 import sys
 import shutil
 from typing import Dict, Optional, Any
@@ -93,11 +92,11 @@ class PytestRunner:
 
             # prepare command
             pytest_cmd = [
-                "python", "-m", "pytest",
+                "pytest",
                 module_path,
                 f"--junitxml={xml_output}",
                 "-p", "no:terminal",
-                "--timeout=20" #TODO: perguntar ao professor se podemos usar timeout
+                "--timeout","20" #TODO: perguntar ao professor se podemos usar timeout
             ]
             # run pytest
             proc = await asyncio.create_subprocess_exec(

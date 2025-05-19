@@ -1,0 +1,71 @@
+services:
+  
+  node1:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      
+    container_name: node1
+    
+    ports:
+      - "8001:25000/udp"
+      - "5001:5000/tcp"
+    
+    environment:
+      - HOST=${HOST:-0}
+      - API_PORT=5000
+      - NODE_PORT=25000
+      
+    restart: "no"
+
+      
+  node2:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    container_name: node2
+    ports:
+      - "8002:25000/udp"
+      - "5002:5000/tcp"
+    environment:
+      - HOST=${HOST:-0}
+      - API_PORT=5000
+      - NODE_PORT=25000
+      
+    restart: "no"
+      
+      
+  node3:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    container_name: node3
+    ports:
+      - "8003:25000/udp"
+      - "5003:5000/tcp"
+    environment:
+      - HOST=${HOST:-0}
+      - API_PORT=5000
+      - NODE_PORT=25000
+      
+    restart: "no"
+    
+  node4:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    container_name: node4
+    ports:
+      - "8004:25000/udp"
+      - "5004:5000/tcp"
+    environment:
+      - HOST=${HOST:-0}
+      - API_PORT=5000  
+      - NODE_PORT=25000
+      
+    restart: "no"
+      
+networks:
+  default:
+    driver: bridge
+    

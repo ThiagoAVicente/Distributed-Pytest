@@ -24,9 +24,10 @@ IP:str = "0.0.0.0"
 URL:int = 1
 ZIP:int = 0
 
-HEARTNEAT_INTERVAL:float = 3
-TASKANNOUNCE_INTERVAL:float = 3
-TASK_SEND_TIMEOUT:float = 5
+HEARTNEAT_INTERVAL:float = 10
+TASKANNOUNCE_INTERVAL:float = 5
+TASK_SEND_TIMEOUT:float = 10
+UPDATE_TIMEOUT:float = 10
 
 GIVEN_TASK:int = 1
 DIRECTLY_PROJECT :int = 0
@@ -35,17 +36,20 @@ EPS: float = 1e-10
 
 class Node:
 
-    def __init__(self, ip:str = IP, port:int = 8000, new_network:bool = False):
+    def __init__(self, ip:str = IP, port:int = 8000, host:Any = None):
 
         # base node info
         self.address:tuple[str,int] = (ip, port)
         self.is_running:bool = False
         self.is_working:bool = False
-        self.connected:bool = new_network
+        self.connected:bool = host == "0" 
+        self.host = host
 
         # network
         self.network_facade:Optional[NetworkFacade] = None
         self.network_schema:Dict[str,List[str]] = {} # for each node, its peers
+        self.updated:bool = False
+        self.last_update:float = .0
 
         # task variables
         self.task_queue:asyncio.Queue = asyncio.Queue()
@@ -81,12 +85,9 @@ class Node:
         "starts the node"
 
         # start network
-        self.network_facade = NetworkFacade(self.address)
+        self.network_facade = NetworkFacade(self.address,self.connected)
         await self.network_facade.start()
 
-        # if starting a new network, run discovery
-        if self.connected:
-            await self.network_facade.start_discovery()
 
         self.is_running = True
         logging.info(f"Node started at {self.address}")
@@ -153,6 +154,7 @@ class Node:
 
     def _new_evaluation(self,eval_id:str):
         "creates a new evaluation entry"
+        self.updated = True
         self.evaluations[eval_id] = {
             "id": eval_id,
             "percentage": 0,
@@ -163,6 +165,7 @@ class Node:
         }
 
     def _new_project(self, project_name:str):
+        self.updated = True
         self.projects[project_name] = {
             "passed": 0,
             "failed": 0,
@@ -172,6 +175,7 @@ class Node:
         }
         
     def _new_module(self,project_name:str, module_name:str):
+        self.updated = True
         self.projects[project_name]["module_info"][module_name] = {
             "passed": 0,
             "failed": 0,
@@ -181,6 +185,7 @@ class Node:
         
     def _new_task(self,task_id:str,addr:tuple[str,int],project_name:str, module_name:str):
         "creates a new task entry"
+        self.updated = True
         self.task_results[task_id] = {
             "task_id": task_id,
             "node":addr,
@@ -195,13 +200,12 @@ class Node:
 
         # get evaluation id
         self.evaluation_counter += 1
-        eval_id = self.network_facade.node_id+str(self.evaluation_counter)
+        eval_id = self.network_facade.node_id+str(self.evaluation_counter) #type: ignore
 
         # download evaluation
         if await f.bytes_2_folder(zip_bytes, os.path.join(os.getcwd(),str(eval_id))):
 
             self._new_evaluation(eval_id)
-
             pn = []
             # get amount of folders inside the zip
             for project_name in os.listdir(os.path.join(os.getcwd(),str(eval_id))):
@@ -489,6 +493,9 @@ class Node:
                         # respond to the node that requested the task
                         logging.debug(f"Sending task result to {addr}")
                         self.network_facade.TASK_RESULT(addr, self.task_results[task_id]) # type: ignore
+                            
+                    
+                    self.updated = True
 
                 else:
                     logging.error(f"Error processing {project_name}::{module}")
@@ -578,10 +585,19 @@ class Node:
         if not self.network_facade or not self.network_facade.is_running():
             raise RuntimeError("Protocol not initialized. Ensure the protocol is started.")
 
+        if time.time() - self.last_update > UPDATE_TIMEOUT:
+            self.updated = True
+
         if not self.connected:
             # stop coroutine till connected
             try:
-                await asyncio.wait_for( self.network_facade.connect(), timeout= 5 )
+                
+                parts = self.host.split(":")
+                ip = parts[0]
+                port = int(parts[1])
+                
+                
+                await asyncio.wait_for( self.network_facade.connect((ip,port)), timeout= 5 )
                 self.connected = True
                 logging.info("Connected to a network")
 
@@ -592,13 +608,20 @@ class Node:
         # start listening for messages
         logging.debug("Node started listening for messages")
         while self.is_running:
+            
+            
             await asyncio.sleep(0.1)
+
+            # try to prepagate cache
+            await self.propagate_cache()
 
             # heartbeat
             #logging.debug(time.time() - self.last_heartbeat)
             if time.time() - self.last_heartbeat > HEARTNEAT_INTERVAL:
                 try:
-                    self.heartbeat()
+                    logging.debug("Sending heartbeat")
+                    self.last_heartbeat = time.time()
+                    self.network_facade.HEARTBEAT() # type: ignore
                 except Exception as e:
                     logging.error(f"Error in heartbeat: {e}")
 
@@ -618,8 +641,7 @@ class Node:
                 break
             except asyncio.TimeoutError:
                 pass
-
-            except Exception as e:
+            except Exception:
                 logging.error(f"Error in message listening loop: {traceback.format_exc()}")
 
 
@@ -627,37 +649,30 @@ class Node:
         logging.debug("Node stopped listening")
         return
     
-    def heartbeat(self):
-        # send heartbeat
-
-        # group node cache
-        # -addr ( string with "ip:port")
-        # -peers_ip ( a list )
-        # -evaluations ( self.evaluations )
-        # -projects ( self.projects )
-        # -node_stats
-
-        node_cache = {
-            "addr": f"{self.address[0]}:{self.address[1]}",
-            "peers_ip": self.network_facade.get_peers_ip(), # type: ignore
-            "evaluations": self.evaluations,
-            "projects": self.projects,
-            "node_stats": self._get_status(),
-        }
+    async def propagate_cache(self):
+        # send network_cache to all nodes
         
-        # update node cache also
-        for eval_id,eval_data in self.evaluations.items():
-            self.network_cache["evaluations"][eval_id]=eval_data
-
-        for project_name,project_data in self.projects.items():
-            self.network_cache["projects"][project_name]=project_data
-
-        self.network_facade.HEARTBEAT(node_cache) # type: ignore
-        #logging.debug(f"Node cache: {self.network_cache}")
+        if self.updated:
+            
+            # update this node cache
+            for eval_id,eval_data in self.evaluations.items():
+                self.network_cache["evaluations"][eval_id]=eval_data
+    
+            for project_name,project_data in self.projects.items():
+                self.network_cache["projects"][project_name]=project_data
         
-        logging.debug("Sending heartbeat ")
-        self.last_heartbeat = time.time()
-
+            logging.debug("Propagating cache")
+            node_cache = {
+                "addr": f"{self.address[0]}:{self.address[1]}",
+                "peers_ip": self.network_facade.get_peers_ip(), # type: ignore
+                "evaluations": self.evaluations,
+                "projects": self.projects,
+                "node_stats": self._get_status(),
+            }
+            self.network_facade.CACHE_UPDATE(node_cache) # type: ignore
+            self.updated = False
+            self.last_update = time.time()
+        
     async def process_message(self, message:dict, addr:tuple[str,int]):
 
         cmd = message.get("cmd",None)
@@ -680,7 +695,10 @@ class Node:
         elif cmd == MessageType.TASK_SEND.name:
             logging.info(f"Received task from {addr}")
             await self._handle_task_send(message, addr)
-
+            
+        elif cmd == MessageType.CONNECT.name:
+            logging.info(f"Received connect request from {addr}")
+            self.network_facade.CONNECT_REP(addr) # type: ignore
 
         elif cmd == MessageType.HEARTBEAT.name:
             logging.info(f"Received heartbeat from {addr}")
@@ -692,6 +710,9 @@ class Node:
         elif cmd == MessageType.TASK_CONFIRM.name:
             # confirm task
            await self._handle_task_confirm(message, addr)
+           
+        elif cmd == MessageType.CACHE_UPDATE.name:
+            await self._handle_cache_update(message, addr)
            
     # handlers
     async def _handle_task_request(self, message:dict, addr:tuple[str,int]):
@@ -709,10 +730,54 @@ class Node:
                 "module": module,
                 "type": ZIP,
                 "task_id": task_id,
+                "api_port":os.environ.get("API_PORT"),
             }
             self.network_facade.TASK_SEND(addr,data) # type: ignore
             logging.debug(f"Sending task {project_name}::{module} to {addr}")
 
+    async def _handle_cache_update(self, message:dict, addr:tuple[str,int]):
+        
+        # update evaluations
+        # group node cache
+        # -addr ( string with "ip:port")
+        # -peers_ip ( a list )
+        # -evaluations ( self.evaluations )
+        # -projects ( self.projects )
+        # -node_stats
+        
+        saddr = message["data"]["addr"]
+        peers_ip = message["data"]["peers_ip"]
+        evaluations = message["data"]["evaluations"]
+        projects = message["data"]["projects"]
+        node_stats = message["data"]["node_stats"]
+        
+        #logging.debug(message)
+        
+        # update network cache
+        self.network_schema[saddr] = peers_ip
+        for evaluation_id , evaluation in evaluations.items():
+            
+            # dont update evaluation if it is from this node_stats
+            if evaluation_id in self.evaluations:
+                continue
+                
+            self.network_cache["evaluations"][evaluation_id] = evaluation
+        
+        self.general_status[saddr] = node_stats
+
+        for project_name, project in projects.items():
+            
+            # dont update project if it is from this node_stats
+            if project_name in self.projects:
+                continue
+            
+            self.network_cache["projects"][project_name]= project
+        
+        
+        # TODO: update node last heartbeat
+        logging.debug("Updated node cache")
+
+        
     async def _handle_task_working(self,message:dict,addr:tuple[str,int]):
         task_id = message["data"]["task_id"]
         if task_id in self.task_responsabilities:
@@ -733,6 +798,7 @@ class Node:
             logging.debug(f"Task {task_id} confirmed")
         else:
             logging.error(f"Task {task_id} not found in expecting confirm")
+            
 
     async def _handle_task_send(self, message:dict, addr:tuple[str,int]):
 
@@ -741,6 +807,7 @@ class Node:
         project_name = message["data"]["info"]["project_name"]
         module = message["data"]["info"]["module"]
         type = message["data"]["info"]["type"]
+        api_port = message["data"]["info"]["api_port"]
 
         if type == ZIP:
 
@@ -750,7 +817,7 @@ class Node:
                 import requests
 
                 try:
-                    url = f"http://{addr[0]}:{addr[1]}/file/{task_id}"
+                    url = f"http://{addr[0]}:{api_port}/file/{task_id}"
                     headers = {
                         "Content-Type": "application/json",
                     }
@@ -802,10 +869,13 @@ class Node:
                 self.projects[project_name]["passed"] += message["data"]["passed"]
                 self.projects[project_name]["failed"] += message["data"]["failed"]
                 
+                self.updated = True
+                
                 # inform node that sucessfully finished
                 logging.debug(f"Recieved task result from {addr}")
                 self.network_facade.TASK_RESULT_REP(addr, # type: ignore
                     {"task_id": task_id})
+                
 
     async def _handle_task_result_rep(self, message:dict, addr:tuple[str,int]):
         task_id = message["data"]["task_id"]
@@ -815,34 +885,5 @@ class Node:
                 del self.task_results[task_id]
 
     async def _handle_heartbeat(self, message:dict, addr:tuple[str,int]):
-
-        # group node cache
-        # -addr ( string with "ip:port")
-        # -peers_ip ( a list )
-        # -evaluations ( self.evaluations )
-        # -projects ( self.projects )
-        # -node_stats
-        
-        saddr = message["data"]["cache"]["addr"]
-        peers_ip = message["data"]["cache"]["peers_ip"]
-        evaluations = message["data"]["cache"]["evaluations"]
-        projects = message["data"]["cache"]["projects"]
-        node_stats = message["data"]["cache"]["node_stats"]
-        
-        #logging.debug(message)
-        
-        # update network cache
-        self.network_schema[saddr] = peers_ip
-        for evaluation_id , evaluation in evaluations.items():
-            self.network_cache["evaluations"][evaluation_id] = evaluation
-        
-        self.general_status[saddr] = node_stats
-
-        for project_name, project in projects.items():
-            
-            self.network_cache["projects"][project_name]= project
-        
-        
-        # TODO: update node last heartbeat
-        
-        logging.debug("Updated node cache")
+        # TODO 
+        pass

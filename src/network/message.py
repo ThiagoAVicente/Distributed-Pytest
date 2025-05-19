@@ -2,6 +2,7 @@
 import enum
 
 class MessageType(enum.Enum):
+    CACHE_UPDATE = 0
     HEARTBEAT = 1
     CONNECT = 2
     CONNECT_REP = 3
@@ -13,7 +14,9 @@ class MessageType(enum.Enum):
     TASK_RESULT = 8
     
     TASK_CONFIRM = 9
-    TASK_RESULT_REP = 10    
+    TASK_RESULT_REP = 10
+
+    
     
     
     
