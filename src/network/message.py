@@ -16,18 +16,26 @@ class MessageType(enum.Enum):
     TASK_CONFIRM = 9
     TASK_RESULT_REP = 10
 
+    PROJECT_ANNOUNCE = 11
+
+        
+        
     
     
     
     
 
 class Message:
-    def __init__(self, msg_type: MessageType, data: dict):
+    def __init__(self, msg_type: MessageType, data: dict, ip:str, port:int):
         self.msg_type:MessageType = msg_type
         self.data:dict = data
+        self.ip:str = ip
+        self.port:int = port
 
     def to_dict(self):
         return {
+            "ip": self.ip,
+            "port": self.port,
             "cmd": self.msg_type.name,
             "data": self.data
         }

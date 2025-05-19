@@ -96,7 +96,7 @@ class PytestRunner:
                 module_path,
                 f"--junitxml={xml_output}",
                 "-p", "no:terminal",
-                "--timeout","20" #TODO: perguntar ao professor se podemos usar timeout
+                "--timeout","20"
             ]
             # run pytest
             proc = await asyncio.create_subprocess_exec(

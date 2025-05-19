@@ -4,6 +4,7 @@ from network.protocol import AsyncProtocol
 from typing import Dict
 import logging
 from uuid import uuid4
+import os
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -45,7 +46,12 @@ class NetworkFacade:
         send a connect response to the discovery server
         """
         new_id = uuid4().hex
-        mssg = Message(MessageType.CONNECT_REP, {"peers": self.peers, "id": self.node_id, "given_id": new_id})
+        mssg = Message( 
+            MessageType.CONNECT_REP, 
+            {"peers": self.peers.copy(), "id": self.node_id, "given_id": new_id},
+            os.environ.get("OUTSIDE_IP"),       #type: ignore
+            int(os.environ.get("OUTSIDE_PORT")) #type: ignore
+        )
         self.peers[new_id] = addr
         self.protocol.send(mssg.to_dict(), addr)
     
@@ -58,24 +64,27 @@ class NetworkFacade:
         while 1:
             
             # contact the discovery server via udp broadcast
-            
-            self.protocol.send(
-                Message(MessageType.CONNECT, {}).to_dict(), 
-                haddr
+            mssg = Message(
+                MessageType.CONNECT,
+                {},
+                os.environ.get("OUTSIDE_IP"),       #type: ignore
+                int(os.environ.get("OUTSIDE_PORT")) #type: ignore
             )
+            self.protocol.send(mssg.to_dict(), haddr )
 
             # wait for a response
             try:
                 response = await asyncio.wait_for(self.protocol.recv(), timeout=5)
                 
                 if response is not None:
-                    data, addr = response
+                    data, _ = response
                     if data.get("cmd") == MessageType.CONNECT_REP.name:
                         # update the peers list
-                        self.peers = {node_id: tuple(addr) for node_id, addr in data["data"]["peers"].items() }
+                        self.peers = {node_id: tuple(addr) for node_id, addr in data["data"]["peers"].items() if tuple(addr) != self.node_addr} 
+                        addr = (data["ip"], int(data["port"]))
                         self.peers[data["data"]["id"]] = addr
                         self.node_id = data["data"]["given_id"]
-                        logging.info(f"Connected to {addr} with peers {self.peers}")
+                        #logging.info(f"Connected to {addr} with peers {self.peers}")
                         break
             
             except asyncio.TimeoutError:
@@ -109,56 +118,108 @@ class NetworkFacade:
         return await self.protocol.recv()
         
     def HEARTBEAT(self) -> None:
-        mssg = Message( MessageType.HEARTBEAT,{}) 
+        mssg = Message( 
+        MessageType.HEARTBEAT,
+        {},
+        os.environ.get("OUTSIDE_IP"),       #type: ignore
+        int(os.environ.get("OUTSIDE_PORT")) #type: ignore
+        )
         self.__send_to_all(mssg)
             
     def TASK_ANNOUNCE(self) -> None:
         """
         announce a new project to the network
         """
-        mssg = Message(MessageType.TASK_ANNOUNCE, {"id":self.node_id})
+        mssg = Message(
+            MessageType.TASK_ANNOUNCE, 
+            {"id":self.node_id},
+            os.environ.get("OUTSIDE_IP"),       #type: ignore
+            int(os.environ.get("OUTSIDE_PORT")) #type: ignore
+        )
         self.__send_to_all(mssg)
     
     def TASK_REQUEST(self, addr:tuple[str,int]) -> None:
         """
         request a task from the anouncer
         """
-        mssg = Message(MessageType.TASK_REQUEST, {"id":self.node_id})
+        mssg = Message(
+            MessageType.TASK_REQUEST, 
+            {"id":self.node_id},
+            os.environ.get("OUTSIDE_IP"),       #type: ignore
+            int(os.environ.get("OUTSIDE_PORT")) #type: ignore
+        )
         self.protocol.send(mssg.to_dict(), addr)
         
     def TASK_SEND(self,addr:tuple, info:dict) -> None:
         """
         send a task to the requester
         """
-        mssg = Message(MessageType.TASK_SEND, {"id":self.node_id, "info": info})
+        mssg = Message(
+            MessageType.TASK_SEND, 
+            {"id":self.node_id, "info": info},
+            os.environ.get("OUTSIDE_IP"),       #type: ignore
+            int(os.environ.get("OUTSIDE_PORT")) #type: ignore
+        )
         self.protocol.send(mssg.to_dict(), addr)
     
     def TASK_CONFIRM(self, addr:tuple, content:Dict) -> None:
         """
         confirm a task to the requester
         """
-        mssg = Message(MessageType.TASK_CONFIRM, content)
+        mssg = Message(
+            MessageType.TASK_CONFIRM, 
+            content,
+            os.environ.get("OUTSIDE_IP"),       #type: ignore
+            int(os.environ.get("OUTSIDE_PORT")) #type: ignore
+        )
         self.protocol.send(mssg.to_dict(), addr)
     
     def TASK_RESULT(self, addr:tuple, result:dict) -> None:
         """
         send the result of a task to the requester
         """
-        mssg = Message(MessageType.TASK_RESULT, result)
+        mssg = Message(
+            MessageType.TASK_RESULT, 
+            result,
+            os.environ.get("OUTSIDE_IP"),       #type: ignore
+            int(os.environ.get("OUTSIDE_PORT")) #type: ignore
+        )
         self.protocol.send(mssg.to_dict(), addr)
 
     def TASK_RESULT_REP(self, addr:tuple, result:dict) -> None:
         """
         send the result of a task to the requester
         """
-        mssg = Message(MessageType.TASK_RESULT_REP, result)
+        mssg = Message(
+            MessageType.TASK_RESULT_REP, 
+            result,
+            os.environ.get("OUTSIDE_IP"),       #type: ignore
+            int(os.environ.get("OUTSIDE_PORT")) #type: ignore
+        )
         self.protocol.send(mssg.to_dict(), addr)
         
     def CACHE_UPDATE(self, cache:Dict)->None:
         """
         send cache to all peers
         """
-        mssg = Message(MessageType.CACHE_UPDATE, cache)
+        mssg = Message(
+            MessageType.CACHE_UPDATE, 
+            cache,
+            os.environ.get("OUTSIDE_IP"),       #type: ignore
+            int(os.environ.get("OUTSIDE_PORT")) #type: ignore
+        )
+        self.__send_to_all(mssg)
+
+    def PROJECT_ANNOUNCE(self,info:Dict)->None:
+        """
+        send project anounce to all peers
+        """
+        mssg = Message(
+            MessageType.PROJECT_ANNOUNCE, 
+            info,
+            os.environ.get("OUTSIDE_IP"),       #type: ignore
+            int(os.environ.get("OUTSIDE_PORT")) #type: ignore
+        )
         self.__send_to_all(mssg)
 
     def __send_to_all(self, mssg:Message) -> None:

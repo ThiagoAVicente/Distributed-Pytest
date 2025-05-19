@@ -9,12 +9,15 @@ services:
     
     ports:
       - "8001:25000/udp"
-      - "5001:5000/tcp"
+      - "5001:10000/tcp"
     
     environment:
       - HOST=${HOST:-0}
-      - API_PORT=5000
+      - API_PORT=5001
       - NODE_PORT=25000
+      - IP=${NIP:-0}
+      - OUTSIDE_IP=${NIP:-0}
+      - OUTSIDE_PORT=8001
       
     restart: "no"
 
@@ -26,11 +29,14 @@ services:
     container_name: node2
     ports:
       - "8002:25000/udp"
-      - "5002:5000/tcp"
+      - "5002:10000/tcp"
     environment:
       - HOST=${HOST:-0}
-      - API_PORT=5000
+      - API_PORT=5002
       - NODE_PORT=25000
+      - IP=${NIP:-0}
+      - OUTSIDE_IP=${NIP:-0}
+      - OUTSIDE_PORT=8002
       
     restart: "no"
       
@@ -42,11 +48,14 @@ services:
     container_name: node3
     ports:
       - "8003:25000/udp"
-      - "5003:5000/tcp"
+      - "5003:10000/tcp"
     environment:
       - HOST=${HOST:-0}
-      - API_PORT=5000
+      - API_PORT=5003
       - NODE_PORT=25000
+      - IP=${NIP:-0}
+      - OUTSIDE_IP=${NIP:-0}
+      - OUTSIDE_PORT=8003
       
     restart: "no"
     
@@ -57,11 +66,13 @@ services:
     container_name: node4
     ports:
       - "8004:25000/udp"
-      - "5004:5000/tcp"
+      - "5004:10000/tcp"
     environment:
       - HOST=${HOST:-0}
-      - API_PORT=5000  
+      - API_PORT=5004  
       - NODE_PORT=25000
+      - OUTSIDE_IP=${NIP:-0}
+      - OUTSIDE_PORT=8004
       
     restart: "no"
       

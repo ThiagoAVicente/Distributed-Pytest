@@ -7,7 +7,6 @@ import logging
 import os
 import traceback
 import base64
-from uuid import uuid4
 import time
 from functools import partial
 from typing import List, Dict, Any, Optional
@@ -44,6 +43,8 @@ class Node:
         self.is_working:bool = False
         self.connected:bool = host == "0" 
         self.host = host
+        
+        self.urls:Dict[str, tuple[str,str]] = {} # urls and tokens for each project
 
         # network
         self.network_facade:Optional[NetworkFacade] = None
@@ -53,11 +54,11 @@ class Node:
 
         # task variables
         self.task_queue:asyncio.Queue = asyncio.Queue()
-        self.task_division:Dict[int,str] = {}
-        self.task_responsabilities:Dict[str,List[Any]] = {} # task_id : [ last_check_up_time, {responsible node : project_name, module_name }}
+        self.project_files:Dict[str,str] = {}               # project name : url/zip : url or zip files
+        self.task_responsabilities:Dict[str,List[Any]] = {} 
         self.task_results:Dict[str,Dict[str,Any]] = {}
-        self.external_task:Optional[tuple[str,str,str]] = None 
-        self.expecting_confirm:Dict[int,float] = {} # task_id : time--> stores the tasks waiting for confirmation 
+        self.external_task:Optional[tuple[str,str]] = None 
+        self.expecting_confirm:Dict[str,float] = {}         # task_id : time--> stores the tasks waiting for confirmation 
 
         # time variables
         self.last_heartbeat:float = .0
@@ -77,8 +78,8 @@ class Node:
 
         # network cache
         self.network_cache:Dict[str, Dict[str,Any]] = {
-            "evaluations": {}, # contains the evaluations and their status
-            "projects": {},    # contains the projects and their status
+            "evaluations": {},                              # contains the evaluations and their status
+            "projects": {},                                 # contains the projects and their status
         }
 
     async def start(self):
@@ -183,11 +184,11 @@ class Node:
             "status": "pending",
         }
         
-    def _new_task(self,task_id:str,addr:tuple[str,int],project_name:str, module_name:str):
+    def _new_task(self,addr:tuple[str,int],project_name:str, module_name:str):
         "creates a new task entry"
         self.updated = True
-        self.task_results[task_id] = {
-            "task_id": task_id,
+        self.task_results[f"{project_name}::{module_name}"] = {
+            "task_id":f"{project_name}::{module_name}",
             "node":addr,
             "project_name": project_name,
             "module": module_name,
@@ -221,6 +222,17 @@ class Node:
                         # remove project folder
                         await self.cleanup_project(eval_id+"/"+project_name)
                         continue
+                    
+                    file_bytes:bytes = await f.folder_2_bytes(os.path.join(os.getcwd(),project_name))
+                    file_b64 = base64.b64encode(file_bytes).decode('utf-8')
+                    self.project_files[project_name] = file_b64
+                    
+                    self.network_facade.PROJECT_ANNOUNCE( # type: ignore
+                        {
+                        "project_name":project_name,
+                        "api_port": os.environ.get("API_PORT"),
+                        }
+                    )
 
                     self._new_project(project_name)
 
@@ -242,7 +254,7 @@ class Node:
 
         # get evaluation id
         self.evaluation_counter += 1
-        eval_id = self.network_facade.node_id+str(self.evaluation_counter)
+        eval_id = self.network_facade.node_id+str(self.evaluation_counter) #type: ignore
 
         # create evaluation entry
         self._new_evaluation(eval_id)
@@ -275,7 +287,7 @@ class Node:
             eval_id = info["eval_id"]
 
             for url in urls:
-                logging.debug(f"---------Downloading {url}")
+                logging.debug(f"Downloading {url}")
                 res = await self.download_project(url, token)
 
                 if not res:
@@ -288,6 +300,7 @@ class Node:
                 
                 if not new_project:
                     continue
+                    
 
                 test_runner = PytestRunner(os.getcwd())
                 modules = await test_runner.get_modules(project_name)
@@ -443,7 +456,8 @@ class Node:
                 task_id = None
                 # get the next project
                 if self.external_task:
-                    project_name, module, task_id = self.external_task
+                    project_name, module = self.external_task
+                    task_id = f"{project_name}::{module}"
                     self.external_task = None
                     source = GIVEN_TASK
                 else:
@@ -521,8 +535,7 @@ class Node:
         "downloads the project from the given url"
         try:
             if url.startswith("https://github.com") :
-                from utils.functions import download_github_repo
-                res:Optional[str] =  await download_github_repo(url, token)
+                res:Optional[str] =  await f.download_github_repo(url, token)
 
                 if not res:
                     return None
@@ -536,6 +549,16 @@ class Node:
                     # clean project folder
                     #await self.cleanup_project(project_name)
                     return project_name,False
+                
+                self.urls[project_name] = (url,token)
+                
+                # anounce new project to nodes
+                self.network_facade.PROJECT_ANNOUNCE( # type: ignore
+                    {
+                    "project_name":project_name,
+                    "api_port": os.environ.get("API_PORT"),
+                    }
+                )
 
                 self._new_project(project_name)
 
@@ -563,21 +586,39 @@ class Node:
             import shutil
             shutil.rmtree(path, ignore_errors=True)
 
-    def get_file(self,task_id):
+    def get_file(self,file_name):
         "get file from task division"
-        try :
-            # check if task_id is valid
-            task_id = int(task_id)
-        except ValueError:
-            logging.error(f"Invalid task id: {task_id}")
-            return None
+        
+        #return url
+        if file_name in self.urls:
+            url,token = self.urls[file_name]
+            self.expecting_confirm[file_name] = time.time()
+            return {"type":URL,"url":url,"token":token}
             
-        if task_id in self.task_division:
-            file_b64 = self.task_division[task_id]
-            self.expecting_confirm[task_id] = time.time()
-            return {"bytes":file_b64}
-        else:
-            return None
+        # return zip file
+        if file_name in self.project_files:
+            file_b64 = self.project_files[file_name]
+            self.expecting_confirm[file_name] = time.time()
+            return {"type":ZIP,"bytes":file_b64}
+        
+        # file is not in this node
+        return None
+            
+    async def connect(self):
+        try:
+            
+            parts = self.host.split(":")
+            ip = parts[0]
+            port = int(parts[1])
+            
+            
+            await asyncio.wait_for( self.network_facade.connect((ip,port)), timeout= 5 ) # type: ignore
+            self.connected = True
+            logging.info("Connected to a network")
+
+        except asyncio.TimeoutError:
+            logging.error("Connection timed out.")
+            await self.stop()
 
     async def listen(self):
         "main loop for message listening"
@@ -590,25 +631,11 @@ class Node:
 
         if not self.connected:
             # stop coroutine till connected
-            try:
-                
-                parts = self.host.split(":")
-                ip = parts[0]
-                port = int(parts[1])
-                
-                
-                await asyncio.wait_for( self.network_facade.connect((ip,port)), timeout= 5 )
-                self.connected = True
-                logging.info("Connected to a network")
-
-            except asyncio.TimeoutError:
-                logging.error("Connection timed out.")
-                await self.stop()
+            await self.connect()
 
         # start listening for messages
         logging.debug("Node started listening for messages")
         while self.is_running:
-            
             
             await asyncio.sleep(0.1)
 
@@ -633,9 +660,9 @@ class Node:
 
             # try to read message
             try:
-                message, addr = await asyncio.wait_for(self.network_facade.recv(),timeout =1)
+                message, _ = await asyncio.wait_for(self.network_facade.recv(),timeout =1)
 
-                await self.process_message(message, addr)
+                await self.process_message(message)
 
             except asyncio.CancelledError:
                 break
@@ -643,8 +670,6 @@ class Node:
                 pass
             except Exception:
                 logging.error(f"Error in message listening loop: {traceback.format_exc()}")
-
-
 
         logging.debug("Node stopped listening")
         return
@@ -673,12 +698,20 @@ class Node:
             self.updated = False
             self.last_update = time.time()
         
-    async def process_message(self, message:dict, addr:tuple[str,int]):
+    async def process_message(self, message:dict):
 
         cmd = message.get("cmd",None)
         if not cmd:
-            logging.error(f"Invalid message from {addr}: {message}")
+            logging.error(f"Invalid message: {message}")
             return
+            
+        ip = message.get("ip",None)
+        port = message.get("port",None)
+        if not ip or not port:
+            logging.error(f"Invalid message: {message}")
+            return
+            
+        addr = (ip, port)
 
         if cmd == MessageType.TASK_ANNOUNCE.name:
             # process project announce
@@ -705,6 +738,7 @@ class Node:
             await self._handle_heartbeat(message, addr)
             
         elif cmd == MessageType.TASK_RESULT.name:
+            logging.debug(f"Received task result from {addr}")
             await self._handle_task_result(message, addr)
            
         elif cmd == MessageType.TASK_CONFIRM.name:
@@ -713,25 +747,27 @@ class Node:
            
         elif cmd == MessageType.CACHE_UPDATE.name:
             await self._handle_cache_update(message, addr)
+            
+        elif cmd == MessageType.TASK_WORKING.name:
+            # update task working
+            await self._handle_task_working(message, addr)
+            
+        elif cmd == MessageType.PROJECT_ANNOUNCE.name:
+            await self._handle_project_announce(message, addr)
            
     # handlers
     async def _handle_task_request(self, message:dict, addr:tuple[str,int]):
         if not self.task_queue.empty():
             project_name, module = await self.task_queue.get()
-            file_bytes:bytes = await f.folder_2_bytes(os.path.join(os.getcwd(),project_name))
-            file_b64 = base64.b64encode(file_bytes).decode('utf-8')
-
-            task_id:int = uuid4().int
-            logging.debug(f"Task id: {task_id}")
-            self.task_division[task_id] = file_b64
-
+            
+            # send the zip file to the node
             data = {
                 "project_name": project_name,
                 "module": module,
-                "type": ZIP,
-                "task_id": task_id,
                 "api_port":os.environ.get("API_PORT"),
             }
+            
+            self.expecting_confirm[f"{project_name}::{module}"] = time.time()
             self.network_facade.TASK_SEND(addr,data) # type: ignore
             logging.debug(f"Sending task {project_name}::{module} to {addr}")
 
@@ -777,77 +813,101 @@ class Node:
         # TODO: update node last heartbeat
         logging.debug("Updated node cache")
 
-        
     async def _handle_task_working(self,message:dict,addr:tuple[str,int]):
         task_id = message["data"]["task_id"]
         if task_id in self.task_responsabilities:
-            if addr == self.task_responsabilities[task_id][1]:
+            if addr == self.task_responsabilities[task_id][0]:
                 # update time
-                self.task_responsabilities[task_id][0] = time.time()
+                self.task_responsabilities[task_id][1] = time.time()
 
     async def _handle_task_confirm(self, message:dict, addr:tuple[str,int]):
         task_id = message["data"]["task_id"]
-        project_name = message["data"]["project_name"]
-        module = message["data"]["module"]
+        addr = (message["ip"], int(message["port"]))
+
         if task_id in self.expecting_confirm:
             del self.expecting_confirm[task_id]
             
             # mark responsability
-            self.task_responsabilities[task_id] = [time.time(), addr,project_name, module]
+            self.task_responsabilities[task_id] = [addr,time.time()]
             
             logging.debug(f"Task {task_id} confirmed")
         else:
-            logging.error(f"Task {task_id} not found in expecting confirm")
-            
+            logging.error(f"Task {task_id} not found in expecting confirm")  
 
     async def _handle_task_send(self, message:dict, addr:tuple[str,int]):
 
         # project id is not needed due to cahce :^)
+         
+        if self.external_task:
+            logging.debug(f"Task {self.external_task} already in progress")
+            return
 
         project_name = message["data"]["info"]["project_name"]
         module = message["data"]["info"]["module"]
-        type = message["data"]["info"]["type"]
         api_port = message["data"]["info"]["api_port"]
 
-        if type == ZIP:
-
-            task_id = message["data"]["info"]["task_id"]
-
-            def get_file_bytes(task_id) -> bytes:
-                import requests
-
-                try:
-                    url = f"http://{addr[0]}:{api_port}/file/{task_id}"
-                    headers = {
-                        "Content-Type": "application/json",
-                    }
-                    response = requests.get(url, headers=headers)
-                    if response.status_code == 200:
-                        file_b64 = response.json()["bytes"]
-                        file_bytes = base64.b64decode(file_b64)
-                        return file_bytes
-                    else:
-                        logging.error(f"Error getting file: {response.status_code}")
-                        return None
-                except Exception:
-                    return None
-
-            file_bytes:bytes = None
-            # get file bytes
+        def get_file_bytes(project_name) -> Optional[tuple[Any,int]]:
+            import requests
+            logging.debug(f"Getting file {project_name} from {addr}")
             try:
-                loop = asyncio.get_running_loop()
-                file_bytes = await loop.run_in_executor(None, partial(get_file_bytes, task_id))
+                url = f"http://{addr[0]}:{api_port}/file/{project_name}"
+                headers = {
+                    "Content-Type": "application/json",
+                }
+                response = requests.get(url, headers=headers)
+                if response.status_code == 200:
+                    if response.json()["type"] == URL:
+                        # download url from github
+                        url = response.json()["url"]
+                        token = response.json()["token"]
+                        
+                        return (url,token),URL
+                    file_b64 = response.json()["bytes"]
+                    file_bytes = base64.b64decode(file_b64)
+                    return file_bytes,ZIP
+                else:
+                    logging.error(f"Error getting file: {response.status_code}")
+                    return None
             except Exception:
-                pass
-
-            if file_bytes:
-                await f.bytes_2_folder(file_bytes, os.path.join(os.getcwd(), project_name))
-                self.external_task = ((project_name, module,task_id))
-                self._new_task(task_id, addr,project_name,module)
+                return None
                 
-                # notify node 
-                self.network_facade.TASK_CONFIRM(addr, # type: ignore
-                    {"task_id": task_id, "project_name": project_name, "module": module}) 
+        # check if folder was already downloaded
+        if project_name in self.urls or project_name in self.project_files:
+            self.external_task = ((project_name, module))
+            self._new_task( addr,project_name,module)
+            self.network_facade.TASK_CONFIRM(addr, # type: ignore
+                {"task_id":f"{project_name}::{module}"}) 
+
+        file_bytes:bytes = None
+        # get file bytes
+        try:
+            loop = asyncio.get_running_loop()
+            res = await loop.run_in_executor(None, partial(get_file_bytes, project_name))
+        except Exception:
+            pass
+
+        if res:
+            info, type = res
+            if type == URL:
+                # download url from github
+                url,token = info
+                await f.download_github_repo(url, token)
+                        
+                # add task
+                self.external_task = ((project_name, module))
+                self._new_task(addr,project_name,module)
+
+            elif type == ZIP:
+                file_bytes = info
+                await f.bytes_2_folder(file_bytes, os.path.join(os.getcwd(), project_name))
+                self.external_task = ((project_name, module))
+                self._new_task(addr,project_name,module)
+            
+            else:
+                return
+            # notify node 
+            self.network_facade.TASK_CONFIRM(addr, # type: ignore
+                {"task_id":f"{project_name}::{module}"}) 
     
     async def _handle_task_result(self, message:dict, addr:tuple[str,int]):
         
@@ -856,7 +916,7 @@ class Node:
         module = message["data"]["module"]
         
         if task_id in self.task_responsabilities:
-            if addr == self.task_responsabilities[task_id][1]:
+            if addr == self.task_responsabilities[task_id][0]:
                 
                 # remove responsability entry
                 del self.task_responsabilities[task_id]
@@ -875,7 +935,51 @@ class Node:
                 logging.debug(f"Recieved task result from {addr}")
                 self.network_facade.TASK_RESULT_REP(addr, # type: ignore
                     {"task_id": task_id})
+    
+    async def _handle_project_announce(self, message:dict, addr:tuple[str,int]):
+        project_name = message["data"]["project_name"]
+        api_port = message["data"]["api_port"]
+        ip = message["ip"]
+
+        if project_name in self.urls or project_name in self.project_files:
+            return
+            
+        # request project
+        import requests
+        try:
+            url = f"http://{ip}:{api_port}/file/{project_name}"
+            headers = {
+                "Content-Type": "application/json",
+            }
+            response = requests.get(url, headers=headers)
+            if response.status_code == 200:
                 
+                type = response.json()["type"]
+                if type == URL:
+                    # dowanload url from github
+                    url = response.json()["url"]
+                    token = response.json()["token"]
+                    res = await f.download_github_repo(url, token)
+                    if res:
+                        self.urls[res]= (url,token)
+
+                elif type == ZIP:
+                    file_b64 = response.json()["bytes"]
+                    file_bytes = base64.b64decode(file_b64)
+                    await f.bytes_2_folder(file_bytes, os.path.join(os.getcwd(), project_name))
+                    self.project_files[project_name] = file_b64
+                else:
+                    logging.error(f"Unknown file type: {type}")
+                    return
+                
+                
+            else:
+                logging.error(f"Error getting file: {response.status_code}")
+        except Exception as e:
+            logging.error(f"Error getting file: {e}")
+
+        # inform node that sucessfully finished
+        logging.debug(f"Recieved project announce from {addr}")
 
     async def _handle_task_result_rep(self, message:dict, addr:tuple[str,int]):
         task_id = message["data"]["task_id"]

@@ -46,7 +46,8 @@ if __name__ == "__main__":
     # get node address from env variable
     host_ = os.environ.get("HOST",0)
     
-    node = Node(port=int(os.environ.get("NODE_PORT")),# type:ignore 
+    node = Node(
+        port=int(os.environ.get("NODE_PORT")),# type:ignore 
         host=str(host_) )
 
     ## uncomment to start the flask api
