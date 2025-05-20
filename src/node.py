@@ -82,6 +82,9 @@ class Node:
             "projects": {},                                 # contains the projects and their status
         }
 
+        # Adicionado para tolerância a falhas
+        self.last_heartbeat_received: Dict[str, float] = {}  # Rastreia o último heartbeat por nó
+
     async def start(self):
         "starts the node"
 
@@ -989,5 +992,29 @@ class Node:
                 del self.task_results[task_id]
 
     async def _handle_heartbeat(self, message:dict, addr:tuple[str,int]):
-        # TODO 
-        pass
+        # Registra o heartbeat recebido com o ID do nó
+        node_id = message.get("data", {}).get("id", f"{addr[0]}:{addr[1]}")  # Usa o endereço como ID se não houver node_id
+        self.last_heartbeat_received[node_id] = time.time()
+        logging.debug(f"Heartbeat received from {node_id}")
+    
+
+    async def check_heartbeats(self):
+        "Verifica periodicamente os heartbeats para detectar falhas"
+        while self.is_running:
+            current_time = time.time()
+            for node_id, last_time in list(self.last_heartbeat_received.items()):
+                if current_time - last_time > 3 * HEARTNEAT_INTERVAL:
+                    logging.warning(f"Node {node_id} is considered failed.")
+                    await self.handle_node_failure(node_id)
+                    del self.last_heartbeat_received[node_id]  # Remove o nó falho
+            await asyncio.sleep(HEARTNEAT_INTERVAL)
+
+    async def handle_node_failure(self, node_id: str):
+        "Reatribui tarefas de um nó falho"
+        tasks_to_reassign = [task_id for task_id, info in self.task_responsabilities.items() 
+                            if f"{info[0][0]}:{info[0][1]}" == node_id]
+        for task_id in tasks_to_reassign:
+            project_name, module = task_id.split("::")
+            await self.task_queue.put((project_name, module))
+            del self.task_responsabilities[task_id]
+            logging.info(f"Reassigned task {task_id} from failed node {node_id}")
