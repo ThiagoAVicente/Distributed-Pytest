@@ -94,6 +94,8 @@ class Node:
 
 
         self.is_running = True
+        # Inicia a verificação de heartbeats
+        asyncio.create_task(self.check_heartbeats())
         logging.info(f"Node started at {self.address}")
 
     async def stop(self):
