@@ -117,10 +117,10 @@ class NetworkFacade:
     async def recv(self) -> tuple[Dict,tuple[str,int]]:
         return await self.protocol.recv()
         
-    def HEARTBEAT(self) -> None:
+    def HEARTBEAT(self,data:dict) -> None:
         mssg = Message( 
         MessageType.HEARTBEAT,
-        {},
+        data,
         os.environ.get("OUTSIDE_IP"),       #type: ignore
         int(os.environ.get("OUTSIDE_PORT")) #type: ignore
         )

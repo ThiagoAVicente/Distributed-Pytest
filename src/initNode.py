@@ -18,25 +18,9 @@ shutdown_event = asyncio.Event()
 async def main():
     await node.start()
     
-    listening_task = asyncio.create_task(node.listen())
-    processing_task = asyncio.create_task(node.process_queue())
     
     await shutdown_event.wait()
-    
     await node.stop()
-    listening_task.cancel()
-    processing_task.cancel()
-    
-    try:
-        await listening_task
-    except asyncio.CancelledError:
-        pass
-        
-    try:
-        await processing_task
-    except asyncio.CancelledError:
-        pass
-
 
 if __name__ == "__main__":
 
@@ -47,7 +31,7 @@ if __name__ == "__main__":
     host_ = os.environ.get("HOST",0)
     
     node = Node(
-        port=int(os.environ.get("NODE_PORT")),# type:ignore 
+        port=int(os.environ.get("NODE_PORT",8000)),# type:ignore 
         host=str(host_) )
 
     ## uncomment to start the flask api

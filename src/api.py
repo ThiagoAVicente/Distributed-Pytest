@@ -56,7 +56,7 @@ class FlaskInterface:
             
                     # If loop is running, use run_coroutine_threadsafe
                     future = asyncio.run_coroutine_threadsafe(
-                        self.node.submit_evalution_url(urls, token),
+                        self.node.submit_evaluation_url(urls, token),
                         self.event_loop
                     )
                     eval_id = future.result()
@@ -91,7 +91,6 @@ class FlaskInterface:
         @self.app.route("/evaluation", methods=["GET"])
         def list_evaluations():
             evals = self.node.get_all_evaluations()
-
 
             return jsonify(evals), 200
 

@@ -10,7 +10,7 @@ import shutil
 from typing import Dict, Optional, Any
 import xml.etree.ElementTree as ET
 
-PYTESTMAXTIME:int = 30
+PYTESTMAXTIME:int = 25
 
 class TestResult:
     "represents the result of a test"
@@ -96,7 +96,6 @@ class PytestRunner:
                 module_path,
                 f"--junitxml={xml_output}",
                 "-p", "no:terminal",
-                "--timeout","20"
             ]
             # run pytest
             proc = await asyncio.create_subprocess_exec(
@@ -106,7 +105,21 @@ class PytestRunner:
                 cwd=project_root,
                 env=self.env,
             )
-            stdout, stderr = await proc.communicate()
+            # run pytest
+            try:
+                process_task = asyncio.create_task(proc.communicate())
+                stdout, stderr = await asyncio.wait_for(process_task, timeout=PYTESTMAXTIME)
+            except asyncio.TimeoutError:
+                logging.warning(f"Test execution timed out after {PYTESTMAXTIME} seconds, terminating process")
+                # force process to stop
+                proc.kill()
+                try:
+                    await asyncio.wait_for(proc.wait(), timeout=5.0)
+                except asyncio.TimeoutError:
+                    logging.error("Process could not be terminated properly")
+                
+                # Return a result that indicates timeout
+                return TestResult(0, 1, 1, PYTESTMAXTIME) 
 
             if proc.returncode >= 2:
                 logging.error(f"Pytest internal errors:\n{stderr.decode()}")
