@@ -6,3 +6,10 @@ export NIP=$(ip route get 1 | awk '{print $7}') # export local ip so docker can 
 docker-compose up -d nodeX # começar uma nova rede
 HOST=ip_de_um_no_qualquer:porta_do_mesmo_no docker-compose up -d nodeX # adicionar um novo nó à rede
 ```
+
+
+```bash
+
+sudo docker images -f "dangling=true" -q | xargs -r sudo docker rmi
+```
+
