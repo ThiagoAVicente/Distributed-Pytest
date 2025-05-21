@@ -45,6 +45,22 @@ class NetworkFacade:
         """
         send a connect response to the discovery server
         """
+
+        # Verificar se o endereço já existe nos peers
+        old_node_id = None
+        for node_id, peer_addr in list(self.peers.items()):
+            if peer_addr == addr:
+                old_node_id = node_id
+                break
+
+        # Se encontrou um nó existente com mesmo IP:porta, remova-o
+        if old_node_id:
+            logging.info(f"Peer with address {addr} already exists with ID {old_node_id}. Replacing with new connection.")
+            del self.peers[old_node_id]
+
+
+
+        # Se o endereço não existir, prosseguir com a conexão normal
         new_id = uuid4().hex
         mssg = Message(
             MessageType.CONNECT_REP,
