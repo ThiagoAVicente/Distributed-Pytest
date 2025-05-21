@@ -361,6 +361,7 @@ class Node:
 
         if not added:
             self.network_cache["evaluations"][eval_id]["end_time"]= time.time()
+            await self._propagate_cache()
 
     def get_evaluation_status(self, eval_id: str) -> Optional[Dict[str,Any]]:
         "return the current state of an evaluation"
