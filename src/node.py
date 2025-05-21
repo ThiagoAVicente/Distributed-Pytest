@@ -310,7 +310,6 @@ class Node:
                 self.network_cache["evaluations"][eval_id]["projects"] = list(
                     set(self.network_cache["evaluations"][eval_id]["projects"]) | {project_name}
                 )
-                await self._propagate_cache()
 
                 if not new_project:
                     continue
@@ -356,12 +355,12 @@ class Node:
                     for module in modules:
                         await self.task_queue.put((project_name, module))
 
-            await self._propagate_cache()
             await asyncio.sleep(0.01)
 
         if not added:
             self.network_cache["evaluations"][eval_id]["end_time"]= time.time()
-            await self._propagate_cache()
+
+        await self._propagate_cache()
 
     def get_evaluation_status(self, eval_id: str) -> Optional[Dict[str,Any]]:
         "return the current state of an evaluation"
