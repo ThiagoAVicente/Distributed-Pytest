@@ -472,13 +472,9 @@ class Node:
 
                 # If priority queue not empty, it should be handled fisrt
                 elif not self.task_priority_queue.empty():
-                    try:
-                        # Get one task from the priority queue
-                        project_name, module = await asyncio.wait_for(self.task_priority_queue.get(), timeout=1)
-                        logging.info(f"Processing high priority task {project_name}::{module}")
-                    except Exception as e:
-                        logging.error(f"Error processing priority task: {e}")
-                        continue
+                    # Get one task from the priority queue
+                    project_name, module = await asyncio.wait_for(self.task_priority_queue.get(), timeout=1)
+                    logging.info(f"Processing high priority task {project_name}::{module}")
 
                 else:
                     project_name, module = await asyncio.wait_for(self.task_queue.get(), timeout=1)
@@ -792,26 +788,37 @@ class Node:
         ip = message.get("ip", None)
         port = message.get("port", None)
         addr = (ip, port)
-        if not self.task_queue.empty():
+
+        send = False
+        project_name = ""
+        module = ""
+
+        if not self.task_priority_queue.empty():
+            project_name, module = await self.task_priority_queue.get()
+            send = True
+        
+        elif not self.task_queue.empty():
             project_name, module = await self.task_queue.get()
-            eval_id = None
-            for e_id, e_data in self.network_cache["evaluations"].items():
-                if project_name in e_data["projects"]:
-                    eval_id = e_id
-                    break
+            send = True
+        
+        eval_id = None
+        for e_id, e_data in self.network_cache["evaluations"].items():
+            if project_name in e_data["projects"]:
+                eval_id = e_id
+                break
 
-            # send the zip file to the node
-            data = {
-                "project_name": project_name,
-                "module": module,
-                "api_port": os.environ.get("API_PORT", "5000"),
-                "eval_id": eval_id,
-            }
+        # send the zip file to the node
+        data = {
+            "project_name": project_name,
+            "module": module,
+            "api_port": os.environ.get("API_PORT", "5000"),
+            "eval_id": eval_id,
+        }
 
-            self.expecting_confirm[f"{project_name}::{module}"] = time.time()
-            self.task_responsibilities[f"{project_name}::{module}"] = (addr, time.time()) # type: ignore
-            self.network_facade.TASK_SEND(addr, data) # type: ignore
-            logging.debug(f"Sending task {project_name}::{module} to {addr}")
+        self.expecting_confirm[f"{project_name}::{module}"] = time.time()
+        self.task_responsibilities[f"{project_name}::{module}"] = (addr, time.time()) # type: ignore
+        self.network_facade.TASK_SEND(addr, data) # type: ignore
+        logging.debug(f"Sending task {project_name}::{module} to {addr}")
 
     async def _handle_cache_update(self, message: dict, _addr: Tuple[str, int]):
 
