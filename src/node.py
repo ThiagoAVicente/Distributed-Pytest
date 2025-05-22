@@ -54,6 +54,7 @@ class Node:
 
         # task variables
         self.task_queue:asyncio.Queue = asyncio.Queue()
+        self.task_priority_queue:asyncio.Queue = asyncio.Queue() #Priority queue for tasks that were being processed by dead nodes
         self.task_responsibilities:Dict[str,Tuple[Tuple[str,int],float]] = {}
         self.task_results:Dict[str,Dict[str,Any]] = {}
         self.external_task:Optional[Tuple[str,str]] = None
@@ -468,6 +469,17 @@ class Node:
                     task_id = f"{project_name}::{module}"
                     self.external_task = None
                     source = GIVEN_TASK
+
+                # If priority queue not empty, it should be handled fisrt
+                elif not self.task_priority_queue.empty():
+                    try:
+                        # Get one task from the priority queue
+                        project_name, module = await asyncio.wait_for(self.task_priority_queue.get(), timeout=1)
+                        logging.info(f"Processing high priority task {project_name}::{module}")
+                    except Exception as e:
+                        logging.error(f"Error processing priority task: {e}")
+                        continue
+
                 else:
                     project_name, module = await asyncio.wait_for(self.task_queue.get(), timeout=1)
 
@@ -666,6 +678,9 @@ class Node:
                 if current_time - timestamp > TASK_SEND_TIMEOUT:
                     logging.warning(f"Timeout waiting for confirmation of task {task_id}")
                     del self.expecting_confirm[task_id]
+                    # Put in priority queue for faster termination
+                    await self.add_to_priority_queue(task_id)
+
 
             # heartbeat
             if current_time - self.last_heartbeat > HEARTBEAT_INTERVAL:
@@ -1095,7 +1110,19 @@ class Node:
         tasks_to_reassign = [task_id for task_id, info in self.task_responsibilities.items()
                             if f"{info[0][0]}:{info[0][1]}" == node_id]
         for task_id in tasks_to_reassign:
-            project_name, module = task_id.split("::")
-            await self.task_queue.put((project_name, module))
+            await self.add_to_priority_queue(task_id)
             del self.task_responsibilities[task_id]
             logging.info(f"Reassigned task {task_id} from failed node {node_id}")
+
+
+
+    async def add_to_priority_queue(self, task_id: str):
+        """Adiciona uma tarefa à fila de prioridade, extraindo project_name e module do task_id"""
+        try:
+            project_name, module = task_id.split("::")
+            await self.task_priority_queue.put((project_name, module))
+            logging.info(f"Task {task_id} added to priority queue")
+            return True
+        except Exception as e:
+            logging.error(f"Error adding task to priority queue: {e}")
+            return False
