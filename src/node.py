@@ -332,7 +332,7 @@ class Node:
                     for module in modules:
                         await self.task_queue.put((project_name, module))
 
-                await asyncio.sleep(0.01)
+            await asyncio.sleep(0.01)
 
 
         elif type == ZIP:
@@ -462,7 +462,6 @@ class Node:
             try:
                 source = DIRECTLY_PROJECT
                 task_id = None
-                eval_id = None
 
                 # external tasks are priority
                 if self.external_task:
@@ -689,7 +688,7 @@ class Node:
                     logging.debug("Sent heartbeat")
                 except Exception as e:
                     logging.error(f"Error in heartbeat: {e}")
-                    
+
             if current_time - self.last_update > UPDATE_INTERVAL:
                 await self._propagate_cache()
 
@@ -800,18 +799,18 @@ class Node:
         if not self.task_priority_queue.empty():
             project_name, module = await self.task_priority_queue.get()
             send = True
-        
+
         elif not self.task_queue.empty():
             project_name, module = await self.task_queue.get()
             send = True
-        
+
         if send:
             eval_id = None
             for e_id, e_data in self.network_cache["evaluations"].items():
                 if project_name in e_data["projects"]:
                     eval_id = e_id
                     break
-    
+
             # send the zip file to the node
             data = {
                 "project_name": project_name,
@@ -819,12 +818,12 @@ class Node:
                 "api_port": os.environ.get("API_PORT", "5000"),
                 "eval_id": eval_id,
             }
-    
+
             self.expecting_confirm[f"{project_name}::{module}"] = time.time()
             self.task_responsibilities[f"{project_name}::{module}"] = (addr, time.time()) # type: ignore
             self.network_facade.TASK_SEND(addr, data) # type: ignore
             logging.debug(f"Sending task {project_name}::{module} to {addr}")
-    
+
     async def _handle_cache_update(self, message: dict, _addr: Tuple[str, int]):
 
         saddr = message["data"]["addr"]
@@ -852,11 +851,11 @@ class Node:
                     current["start_time"] = e_data["start_time"]
                 if current["end_time"] is None:
                     current["end_time"] = e_data["end_time"]
-                    
+
             if self.network_cache["evaluations"][e_id]["end_time"] is not None:
                 # clean
                 for project_name in self.network_cache["evaluations"][e_id]["projects"]:
-                    
+
                     self._remove_directory(project_name)
 
         for p_name, p_data in projects.items():
@@ -1045,7 +1044,6 @@ class Node:
     async def _handle_project_announce(self, message: dict, _addr: Tuple[str, int]):
         project_name = message["data"]["project_name"]
         api_port = message["data"]["api_port"]
-        eval_id = message["data"].get("eval_id")
         ip = message.get("ip", None)
         port = message.get("port", None)
         addr = (ip, port)
@@ -1058,7 +1056,6 @@ class Node:
             url = f"http://{addr[0]}:{api_port}/file/{project_name}"
             response = requests.get(url, headers={"Content-Type": "application/json"})
             if response.status_code == 200:
-                node_addr = f"{addr[0]}:{addr[1]}"
                 type = response.json()["type"]
                 if type == URL:
                     # dowanload url from github
@@ -1099,7 +1096,7 @@ class Node:
         ip = message.get("ip", None)
         port = message.get("port", None)
         addr = (ip, port)
-        node_id = message.get("data", {}).get("id", f"{addr[0]}:{addr[1]}")  
+        node_id = message.get("data", {}).get("id", f"{addr[0]}:{addr[1]}")
         self.last_heartbeat_received[node_id] = time.time()
         self.network_facade.add_peer(node_id,addr) # type: ignore
         logging.debug(f"Heartbeat received from {ip}:{port}")
