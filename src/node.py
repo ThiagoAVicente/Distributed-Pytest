@@ -84,6 +84,10 @@ class Node:
 
         # Adicionado para tolerância a falhas
         self.last_heartbeat_received: Dict[str, float] = {}  # Rastreia o último heartbeat por nó
+        self.response_times: Dict[str, List[float]] = {}     # Tempos de resposta por nó (addr: lista de tempos)
+        self.response_timeout: float = 5.0                   # Valor inicial do timeout
+        self.timeout_update_interval: float = 10.0           # Intervalo para atualizar o timeout
+        self.last_timeout_update: float = time.time()        # Última atualização do timeout
 
     async def start(self):
         "starts the node"
@@ -670,8 +674,12 @@ class Node:
 
             current_time = time.time()
 
+            # Atualizar o timeout dinamico
+            await self.update_response_timeout()
+
+
             for task_id, timestamp in list(self.expecting_confirm.items()):
-                if current_time - timestamp > response_timeout:
+                if current_time - timestamp > self.response_timeout:
                     logging.warning(f"Timeout waiting for confirmation of task {task_id}")
                     del self.expecting_confirm[task_id]
                     # Put in priority queue for faster termination
@@ -701,9 +709,6 @@ class Node:
             # try to read message
             try:
                 message, _ = await asyncio.wait_for(self.network_facade.recv(), timeout=1)
-                send_time = message["timestamp"]
-                delay = current_time - send_time
-                # TODO: dinamicaly increase/decrease response_timeout
                 await self.process_message(message)
 
             except asyncio.CancelledError:
@@ -746,6 +751,17 @@ class Node:
             return
 
         addr = (ip, port)
+        current_time = time.time()
+        send_time = message.get("timestamp", None)
+
+
+        # Registar tempo de resposta com timestamp
+        if send_time:
+            response_time = max(0.001, current_time - send_time) # Garantir que não seja negativo
+            self.response_times.setdefault(addr, []).append(response_time)
+            if len(self.response_times[addr]) > 10:  # Limitar a 10 tempos recentes
+                self.response_times[addr].pop(0)
+
 
         if cmd == MessageType.TASK_ANNOUNCE.name:
             # process project announce
@@ -1134,3 +1150,25 @@ class Node:
         except Exception as e:
             logging.error(f"Error adding task to priority queue: {e}")
             return False
+
+
+
+    async def update_response_timeout(self):
+        """Atualiza o response_timeout com base nos tempos de resposta observados."""
+        if time.time() - self.last_timeout_update < self.timeout_update_interval:
+            return
+
+        all_times = [t for times in self.response_times.values() for t in times]
+        if not all_times:
+            return  # Mantém o valor atual se não houver dados
+
+        # Calcular média e desvio padrão
+        avg_time = sum(all_times) / len(all_times)
+        std_dev = (sum((t - avg_time) ** 2 for t in all_times) / len(all_times)) ** 0.5
+
+        # Novo timeout: média + 2 vezes o desvio padrão, com limites
+        new_timeout = avg_time + 2 * std_dev
+        self.response_timeout = max(1.0, min(10.0, new_timeout))
+
+        self.last_timeout_update = time.time()
+        logging.debug(f"Updated response_timeout to {self.response_timeout:.2f} seconds")
