@@ -1,5 +1,6 @@
 
 import enum
+import time
 
 class MessageType(enum.Enum):
     CACHE_UPDATE = 0
@@ -37,5 +38,6 @@ class Message:
             "ip": self.ip,
             "port": self.port,
             "cmd": self.msg_type.name,
-            "data": self.data
+            "data": self.data,
+            "timestamp": time.time()
         }

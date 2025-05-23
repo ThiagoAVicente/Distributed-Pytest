@@ -3,10 +3,19 @@ from network.message import Message, MessageType
 from network.protocol import AsyncProtocol
 from typing import Dict
 import logging
-from uuid import uuid4
+import time
+import random
 import os
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+def generate_id():
+    """ 
+    gen a "unique" id
+    """
+    timestamp = int(time.time() * 1e6)  
+    rand = random.randint(10000, 99999) 
+    return int(f"{timestamp}{rand}")
 
 class NetworkFacade:
 
@@ -21,7 +30,7 @@ class NetworkFacade:
         self.node_addr:tuple[str,int] = addr
         self.protocol:AsyncProtocol = None # type: ignore
         self.peers:Dict[str,tuple[str,int]] = {}
-        self.node_id:str = uuid4().hex if start else None # type: ignore
+        self.node_id:str = str(generate_id()) if start else None # type: ignore
         self.discovery_task:asyncio.Task = None # type: ignore
 
     async def start(self) :
@@ -40,6 +49,23 @@ class NetworkFacade:
 
     def is_running(self) -> bool:
         return self.protocol is not None
+        
+    def add_peer(self, id:str, addr:tuple[str,int]) -> None:
+        """
+        add a peer to the list of peers
+        """
+        if id not in self.peers:
+            self.peers[id] = addr
+            logging.info(f"Added peer {id} to the list of peers")
+            
+    def remove_peer(self, id:str) -> None:
+        """
+        remove a peer from the list of peers
+        """
+        if id in self.peers:
+            del self.peers[id]
+            logging.info(f"Removed peer {id} from the list of peers")
+
 
     def CONNECT_REP(self,addr:tuple[str,int]) ->None:
         """
@@ -53,21 +79,25 @@ class NetworkFacade:
                 old_node_id = node_id
                 break
 
+        new_id = str(generate_id())
+
         # Se encontrou um nó existente com mesmo IP:porta, remova-o
         if old_node_id:
-            logging.info(f"Peer with address {addr} already exists with ID {old_node_id}. Replacing with new connection.")
+            logging.info(f"Peer with address {addr} already exists with ID {old_node_id}. ")
             del self.peers[old_node_id]
-
-
-
+            new_id = old_node_id # keeping the same id
+            
         # Se o endereço não existir, prosseguir com a conexão normal
-        new_id = uuid4().hex
+        while new_id in self.peers:
+            new_id = str(generate_id())
+        
         mssg = Message(
             MessageType.CONNECT_REP,
             {"peers": self.peers.copy(), "id": self.node_id, "given_id": new_id},
             os.environ.get("OUTSIDE_IP"),       #type: ignore
             int(os.environ.get("OUTSIDE_PORT")) #type: ignore
         )
+        
         self.peers[new_id] = addr
         self.protocol.send(mssg.to_dict(), addr)
 
@@ -107,22 +137,6 @@ class NetworkFacade:
                 logging.warning("No response from discovery server")
 
             await asyncio.sleep(1)
-
-    async def set_peers(self, new_peers:Dict[str,tuple[str,int]]):
-        """
-        updates the list of peers
-        """
-        self.peers = new_peers
-
-    async def add_peer(self, id:str, peer:tuple[str,int]):
-        """
-        adds a peer to the list of peers
-        """
-        if id not in self.peers:
-            self.peers[id] = peer
-            logging.info(f"Added peer {id} to the list of peers")
-        else:
-            logging.warning(f"Peer {id} already exists in the list of peers")
 
     def get_peers_ip(self) -> list[str]:
         """

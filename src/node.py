@@ -23,10 +23,10 @@ IP:str = "0.0.0.0"
 URL:int = 1
 ZIP:int = 0
 
-HEARTBEAT_INTERVAL:float = 10
+HEARTBEAT_INTERVAL:float = 5
+UPDATE_INTERVAL:float = 5
 TASK_ANNOUNCE_INTERVAL:float = 5
-TASK_SEND_TIMEOUT:float = 10
-UPDATE_TIMEOUT:float = 10
+response_timeout:float = 5
 
 GIVEN_TASK:int = 1
 DIRECTLY_PROJECT :int = 0
@@ -65,6 +65,7 @@ class Node:
         # time variables
         self.last_heartbeat:float = .0
         self.last_task_announce:float = .0
+        self.last_update:float = .0
 
         # stats
         self.tests_passed:int = 0
@@ -671,24 +672,26 @@ class Node:
             current_time = time.time()
 
             for task_id, timestamp in list(self.expecting_confirm.items()):
-                if current_time - timestamp > TASK_SEND_TIMEOUT:
+                if current_time - timestamp > response_timeout:
                     logging.warning(f"Timeout waiting for confirmation of task {task_id}")
                     del self.expecting_confirm[task_id]
                     # Put in priority queue for faster termination
                     await self.add_to_priority_queue(task_id)
-
 
             # heartbeat
             if current_time - self.last_heartbeat > HEARTBEAT_INTERVAL:
                 try:
                     self.last_heartbeat = current_time
                     self.network_facade.HEARTBEAT({
-                        "id": f"{self.outside_ip}:{self.outside_port}",
+                        "id": self.network_facade.node_id, # type: ignore",
                         "peers_ip": self.network_facade.get_peers_ip(), # type: ignore
                     })
                     logging.debug("Sent heartbeat")
                 except Exception as e:
                     logging.error(f"Error in heartbeat: {e}")
+                    
+            if current_time - self.last_update > UPDATE_INTERVAL:
+                await self._propagate_cache()
 
             # anounce task
             if not self.task_queue.empty() and current_time - self.last_task_announce > TASK_ANNOUNCE_INTERVAL:
@@ -699,6 +702,9 @@ class Node:
             # try to read message
             try:
                 message, _ = await asyncio.wait_for(self.network_facade.recv(), timeout=1)
+                send_time = message["timestamp"]
+                delay = current_time - send_time
+                # TODO: dinamicaly increase/decrease response_timeout
                 await self.process_message(message)
 
             except asyncio.CancelledError:
@@ -724,6 +730,7 @@ class Node:
             "stats": self._get_status(),
         }
         self.network_facade.CACHE_UPDATE(node_cache) # type: ignore
+        self.last_update = time.time()
         logging.debug("Propagating cache to all nodes")
 
     async def process_message(self, message: dict):
@@ -743,14 +750,13 @@ class Node:
 
         if cmd == MessageType.TASK_ANNOUNCE.name:
             # process project announce
-            logging.debug(f"Project announce from {addr}")
+            logging.debug(f"Task announce from {addr}")
             if not self.is_working and self.task_queue.empty():
-                logging.debug("Requesting task")
+                logging.info("Requesting task")
                 self.network_facade.TASK_REQUEST(addr) # type: ignore
 
         elif cmd == MessageType.TASK_REQUEST.name:
             # process task request
-            logging.debug(f"Task request from {addr}: {message}")
             await self._handle_task_request(message, addr)
 
         elif cmd == MessageType.TASK_SEND.name:
@@ -762,11 +768,9 @@ class Node:
             self.network_facade.CONNECT_REP(addr) # type: ignore
 
         elif cmd == MessageType.HEARTBEAT.name:
-            logging.info(f"Received heartbeat from {addr}")
             await self._handle_heartbeat(message, addr)
 
         elif cmd == MessageType.TASK_RESULT.name:
-            logging.debug(f"Received task result from {addr}")
             await self._handle_task_result(message, addr)
 
         elif cmd == MessageType.TASK_CONFIRM.name:
@@ -848,6 +852,12 @@ class Node:
                     current["start_time"] = e_data["start_time"]
                 if current["end_time"] is None:
                     current["end_time"] = e_data["end_time"]
+                    
+            if self.network_cache["evaluations"][e_id]["end_time"] is not None:
+                # clean
+                for project_name in self.network_cache["evaluations"][e_id]["projects"]:
+                    
+                    self._remove_directory(project_name)
 
         for p_name, p_data in projects.items():
             if p_name not in self.network_cache["projects"]:
@@ -991,8 +1001,6 @@ class Node:
         except Exception:
             logging.error(f"Error handling task send: {traceback.format_exc()}")
 
-
-
     async def _handle_task_result(self, message: dict, _addr: Tuple[str, int]):
 
         task_id = message["data"]["task_id"]
@@ -1091,14 +1099,10 @@ class Node:
         ip = message.get("ip", None)
         port = message.get("port", None)
         addr = (ip, port)
-        node_id = message.get("data", {}).get("id", f"{addr[0]}:{addr[1]}")  # Usa o endereço como ID se não houver node_id
+        node_id = message.get("data", {}).get("id", f"{addr[0]}:{addr[1]}")  
         self.last_heartbeat_received[node_id] = time.time()
-        self.network_cache["status"][node_id] = {
-            "net": message.get("data", {}).get("peers_ip", []),
-            "stats": self.network_cache["status"].get(node_id, {}).get("stats", {})
-        }
-        logging.debug(f"Heartbeat received from {node_id}")
-
+        self.network_facade.add_peer(node_id,addr) # type: ignore
+        logging.debug(f"Heartbeat received from {ip}:{port}")
 
     async def check_heartbeats(self):
         "Verifica periodicamente os heartbeats para detectar falhas"
@@ -1109,6 +1113,7 @@ class Node:
                     logging.warning(f"Node {node_id} is considered failed.")
                     await self.handle_node_failure(node_id)
                     del self.last_heartbeat_received[node_id]  # Remove o nó falho
+                    self.network_facade.remove_peer(node_id) # type: ignore
                     if node_id in self.network_cache["status"]:
                         del self.network_cache["status"][node_id]
             await asyncio.sleep(HEARTBEAT_INTERVAL)
@@ -1121,8 +1126,6 @@ class Node:
             await self.add_to_priority_queue(task_id)
             del self.task_responsibilities[task_id]
             logging.info(f"Reassigned task {task_id} from failed node {node_id}")
-
-
 
     async def add_to_priority_queue(self, task_id: str):
         """Adiciona uma tarefa à fila de prioridade, extraindo project_name e module do task_id"""
