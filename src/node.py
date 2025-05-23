@@ -801,25 +801,26 @@ class Node:
             project_name, module = await self.task_queue.get()
             send = True
         
-        eval_id = None
-        for e_id, e_data in self.network_cache["evaluations"].items():
-            if project_name in e_data["projects"]:
-                eval_id = e_id
-                break
-
-        # send the zip file to the node
-        data = {
-            "project_name": project_name,
-            "module": module,
-            "api_port": os.environ.get("API_PORT", "5000"),
-            "eval_id": eval_id,
-        }
-
-        self.expecting_confirm[f"{project_name}::{module}"] = time.time()
-        self.task_responsibilities[f"{project_name}::{module}"] = (addr, time.time()) # type: ignore
-        self.network_facade.TASK_SEND(addr, data) # type: ignore
-        logging.debug(f"Sending task {project_name}::{module} to {addr}")
-
+        if send:
+            eval_id = None
+            for e_id, e_data in self.network_cache["evaluations"].items():
+                if project_name in e_data["projects"]:
+                    eval_id = e_id
+                    break
+    
+            # send the zip file to the node
+            data = {
+                "project_name": project_name,
+                "module": module,
+                "api_port": os.environ.get("API_PORT", "5000"),
+                "eval_id": eval_id,
+            }
+    
+            self.expecting_confirm[f"{project_name}::{module}"] = time.time()
+            self.task_responsibilities[f"{project_name}::{module}"] = (addr, time.time()) # type: ignore
+            self.network_facade.TASK_SEND(addr, data) # type: ignore
+            logging.debug(f"Sending task {project_name}::{module} to {addr}")
+    
     async def _handle_cache_update(self, message: dict, _addr: Tuple[str, int]):
 
         saddr = message["data"]["addr"]
