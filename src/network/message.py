@@ -7,24 +7,26 @@ class MessageType(enum.Enum):
     HEARTBEAT = 1
     CONNECT = 2
     CONNECT_REP = 3
-    
+
     TASK_ANNOUNCE = 4
     TASK_REQUEST = 5
     TASK_SEND = 6
     TASK_WORKING = 7
     TASK_RESULT = 8
-    
+
     TASK_CONFIRM = 9
     TASK_RESULT_REP = 10
 
     PROJECT_ANNOUNCE = 11
+    RECOVERY_ELECTION = 12                 # Eleição para recuperação
+    EVALUATION_RESPONSIBILITY_UPDATE = 13  # Atualização de responsabilidade por Evaluation
 
-        
-        
-    
-    
-    
-    
+
+
+
+
+
+
 
 class Message:
     def __init__(self, msg_type: MessageType, data: dict, ip:str, port:int):
