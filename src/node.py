@@ -89,6 +89,11 @@ class Node:
         self.timeout_update_interval: float = 10.0           # Intervalo para atualizar o timeout
         self.last_timeout_update: float = time.time()        # Última atualização do timeout
 
+
+        # Election tracking
+        self.active_elections: Dict[str, Dict[str, float]] = {}  # failed_node_id -> {candidate_id: timestamp}
+
+
     async def start(self):
         "starts the node"
 
@@ -658,6 +663,119 @@ class Node:
             logging.error("Connection timed out.")
             await self.stop()
 
+
+
+    def get_active_evaluations_for_node(self, node_id: str) -> Dict[str, List[str]]:
+        """
+        Identifica avaliações que estavam ativas no nó falho
+        Retorna: {eval_id: [project_names]}
+        """
+        active_evaluations = {}
+
+        logging.info(f"Looking for active evaluations for node {node_id}")
+
+        # Check if we have node_id in status cache to get its address
+        node_addr = None
+        if node_id in self.network_cache["status"]:
+            node_addr = self.network_cache["status"][node_id].get("addr")
+            logging.info(f"Found address {node_addr} for node {node_id} in cache")
+
+        # If we still don't have an address but have peers, try to find it there
+        if not node_addr and hasattr(self.network_facade, 'peers') and node_id in self.network_facade.peers:
+            peer_addr = self.network_facade.peers[node_id]
+            node_addr = f"{peer_addr[0]}:{peer_addr[1]}"
+            logging.info(f"Found address {node_addr} for node {node_id} in peers")
+
+        # Start by collecting all evaluations that are not completed
+        # (where end_time is None)
+        active_eval_ids = []
+        for eval_id, eval_data in self.network_cache["evaluations"].items():
+            if eval_data.get("end_time") is None:
+                active_eval_ids.append(eval_id)
+                logging.info(f"Found active evaluation: {eval_id}")
+
+        logging.info(f"Total active evaluations found: {len(active_eval_ids)}")
+
+        # For each active evaluation, find its projects
+        for eval_id in active_eval_ids:
+            eval_data = self.network_cache["evaluations"][eval_id]
+            eval_projects = []
+
+            for project_name in eval_data.get("projects", []):
+                if project_name in self.network_cache["projects"]:
+                    project_data = self.network_cache["projects"][project_name]
+                    project_node = project_data.get("node", "")
+
+                    # Check if this project belongs to the failed node
+                    belongs_to_node = False
+
+                    # Try different matching strategies
+                    if project_node == node_id or (node_addr and project_node == node_addr):
+                        belongs_to_node = True
+
+                    if belongs_to_node:
+                        # Check if there are pending or running modules
+                        has_active_modules = False
+                        for module_data in project_data.get("modules", {}).values():
+                            if module_data.get("status") in ["pending", "running"]:
+                                has_active_modules = True
+                                break
+
+                        if has_active_modules:
+                            eval_projects.append(project_name)
+                            logging.info(f"Project {project_name} belongs to node {node_id} and has active modules")
+
+            # If we found projects for this evaluation, add it to the result
+            if eval_projects:
+                active_evaluations[eval_id] = eval_projects
+
+        # Add any current evaluations from node status
+        if node_id in self.network_cache["status"]:
+            node_stats = self.network_cache["status"][node_id].get("stats", {})
+            node_evaluations = node_stats.get("evaluations", [])
+
+            if node_evaluations:
+                logging.info(f"Node {node_id} has evaluations in its stats: {node_evaluations}")
+
+                # For each evaluation the node was working on
+                for eval_id in node_evaluations:
+                    if eval_id not in active_evaluations and eval_id in self.network_cache["evaluations"]:
+                        eval_data = self.network_cache["evaluations"][eval_id]
+
+                        # Check if evaluation is still active
+                        if eval_data.get("end_time") is None:
+                            # Find any projects with active modules
+                            eval_projects = []
+
+                            for project_name in eval_data.get("projects", []):
+                                if project_name in self.network_cache["projects"]:
+                                    project_data = self.network_cache["projects"][project_name]
+
+                                    # Check if there are pending or running modules
+                                    has_active_modules = False
+                                    for module_data in project_data.get("modules", {}).values():
+                                        if module_data.get("status") in ["pending", "running"]:
+                                            has_active_modules = True
+                                            break
+
+                                    if has_active_modules:
+                                        eval_projects.append(project_name)
+
+                            if eval_projects:
+                                active_evaluations[eval_id] = eval_projects
+                                logging.info(f"Added evaluation {eval_id} from node stats with projects {eval_projects}")
+
+        if active_evaluations:
+            logging.info(f"Found active evaluations for node {node_id}: {active_evaluations}")
+        else:
+            logging.warning(f"No active evaluations found for node {node_id}")
+
+        return active_evaluations
+
+
+
+
+
     async def listen(self):
         "main loop for message listening"
         logging.debug("Node started listening")
@@ -801,6 +919,12 @@ class Node:
 
         elif cmd == MessageType.PROJECT_ANNOUNCE.name:
             await self._handle_project_announce(message, addr)
+
+        elif cmd == MessageType.RECOVERY_ELECTION.name:
+            await self._handle_recovery_election(message, addr)
+
+        elif cmd == MessageType.EVALUATION_RESPONSIBILITY_UPDATE.name:
+            await self._handle_evaluation_responsibility_update(message, addr)
 
     # handlers
     async def _handle_task_request(self, message: dict, _addr: Tuple[str, int]):
@@ -1017,13 +1141,104 @@ class Node:
             logging.error(f"Error handling task send: {traceback.format_exc()}")
 
     async def _handle_task_result(self, message: dict, _addr: Tuple[str, int]):
-
+        """Process task result message from a worker node"""
         task_id = message["data"]["task_id"]
         project_name = message["data"]["project_name"]
         module = message["data"]["module"]
         ip = message.get("ip", None)
         port = message.get("port", None)
         addr = (ip, port)
+
+        # Get the current node's address
+        my_addr = f"{self.outside_ip}:{self.outside_port}"
+
+        # Obter o nó responsável atual do cache
+        responsible_node = None
+        responsible_node_str = None
+        if project_name in self.network_cache["projects"]:
+            responsible_node_str = self.network_cache["projects"][project_name].get("node")
+            if responsible_node_str:
+                try:
+                    ip, port_str = responsible_node_str.split(":")
+                    responsible_node = (ip, int(port_str))
+                except Exception as e:
+                    logging.warning(f"Error parsing responsible node address {responsible_node_str}: {e}")
+
+        # Check if this node is the responsible node
+        is_responsible = responsible_node_str == my_addr
+
+        # If the result is for a task this node is responsible for
+        if task_id in self.task_responsibilities:
+            original_addr, _ = self.task_responsibilities[task_id]
+
+            # Se o nó responsável mudou e não é este nó, encaminhar o resultado
+            if responsible_node and addr != responsible_node and not is_responsible:
+                if original_addr != responsible_node:
+                    logging.info(f"Forwarding task result {task_id} to the new responsible node {responsible_node}")
+                    self.network_facade.TASK_RESULT(responsible_node, message["data"])
+                    return  # Return early to avoid processing the result locally
+
+            # Process the result if this node is still responsible or is the new responsible node
+            if addr == original_addr or is_responsible:
+                # remove responsibility entry
+                del self.task_responsibilities[task_id]
+
+                # update project status
+                self.network_cache["projects"][project_name]["modules"][module]["passed"] = message["data"]["passed"]
+                self.network_cache["projects"][project_name]["modules"][module]["failed"] = message["data"]["failed"]
+                self.network_cache["projects"][project_name]["modules"][module]["status"] = "finished"
+                self.network_cache["projects"][project_name]["modules"][module]["time"] = message["data"]["time"]
+
+                # update project status
+                self.processed_projects.add(project_name)
+                for eval_id, eval_data in self.network_cache["evaluations"].items():
+                    if project_name in eval_data["projects"]:
+                        self.processed_evaluations.add(eval_id)
+                        all_finished = all(
+                            self.network_cache["projects"][p]["modules"][m]["status"] == "finished"
+                            for p in eval_data["projects"]
+                            for m in self.network_cache["projects"][p]["modules"]
+                        )
+                        if all_finished and not eval_data["end_time"]:
+                            eval_data["end_time"] = time.time()
+
+                # inform node that successfully finished
+                logging.debug(f"Received task result from {addr}")
+                self.network_facade.TASK_RESULT_REP(addr, {"task_id": task_id})
+                await self._propagate_cache()
+
+        # If this node is the new responsible node but wasn't originally responsible
+        elif is_responsible and responsible_node_str == my_addr:
+            logging.info(f"Received task result {task_id} as the new responsible node")
+
+            # update project status
+            if project_name in self.network_cache["projects"] and module in self.network_cache["projects"][project_name]["modules"]:
+                self.network_cache["projects"][project_name]["modules"][module]["passed"] = message["data"]["passed"]
+                self.network_cache["projects"][project_name]["modules"][module]["failed"] = message["data"]["failed"]
+                self.network_cache["projects"][project_name]["modules"][module]["status"] = "finished"
+                self.network_cache["projects"][project_name]["modules"][module]["time"] = message["data"]["time"]
+
+                # Update evaluation status
+                self.processed_projects.add(project_name)
+                for eval_id, eval_data in self.network_cache["evaluations"].items():
+                    if project_name in eval_data["projects"]:
+                        self.processed_evaluations.add(eval_id)
+                        all_finished = all(
+                            self.network_cache["projects"][p]["modules"][m]["status"] == "finished"
+                            for p in eval_data["projects"]
+                            for m in self.network_cache["projects"][p]["modules"]
+                        )
+                        if all_finished and not eval_data["end_time"]:
+                            eval_data["end_time"] = time.time()
+
+                # inform node that successfully finished
+                self.network_facade.TASK_RESULT_REP(addr, {"task_id": task_id})
+                await self._propagate_cache()
+            else:
+                logging.warning(f"Received task result for unknown project/module: {task_id}")
+
+
+
 
         if task_id in self.task_responsibilities:
             if addr == self.task_responsibilities[task_id][0]:
@@ -1132,13 +1347,34 @@ class Node:
             await asyncio.sleep(HEARTBEAT_INTERVAL)
 
     async def handle_node_failure(self, node_id: str):
-        "Reatribui tarefas de um nó falho"
+        """
+        Lida com a falha de um nó, elegendo um nó para receber resultados,
+        Redistribuindo tarefas do nó falho"""
+
+        logging.warning(f"Starting recovery process for failed node {node_id}")
+
+        # 1. Verificar se há avaliações ativas no nó falho
+        active_evaluations = self.get_active_evaluations_for_node(node_id)
+
+
+        if active_evaluations:
+            # 2. Participar da eleição para recuperação
+            recovery_node = await self._elect_recovery_node(node_id, active_evaluations)
+
+            if recovery_node == self.network_facade.node_id:
+                # Este nó foi eleito para recuperação
+                logging.info(f"This node has been elected to retrieve node ratings {node_id}")
+                await self._become_recovery_node(node_id, active_evaluations)
+
+
+        # 3. Redistribuir tarefas
         tasks_to_reassign = [task_id for task_id, info in self.task_responsibilities.items()
                             if f"{info[0][0]}:{info[0][1]}" == node_id]
         for task_id in tasks_to_reassign:
             await self.add_to_priority_queue(task_id)
             del self.task_responsibilities[task_id]
             logging.info(f"Reassigned task {task_id} from failed node {node_id}")
+
 
     async def add_to_priority_queue(self, task_id: str):
         """Adiciona uma tarefa à fila de prioridade, extraindo project_name e module do task_id"""
@@ -1150,6 +1386,150 @@ class Node:
         except Exception as e:
             logging.error(f"Error adding task to priority queue: {e}")
             return False
+
+
+
+    # Replace the existing _elect_recovery_node method with this implementation:
+    async def _elect_recovery_node(self, failed_node_id: str, active_evaluations: Dict[str, List[str]]) -> str:
+        """
+        Processo de eleição para determinar qual nó assumirá a responsabilidade
+        de receber resultados do nó falho.
+
+        Algoritmo: o nó com o menor ID vence a eleição.
+        """
+        # Initialize election tracking for this failed node
+        if failed_node_id not in self.active_elections:
+            self.active_elections[failed_node_id] = {}
+
+        # Add this node as a candidate
+        self.active_elections[failed_node_id][self.network_facade.node_id] = time.time()
+
+        # Announce candidacy
+        election_data = {
+            "candidate_id": self.network_facade.node_id,
+            "failed_node": failed_node_id,
+            "timestamp": time.time()
+        }
+
+        self.network_facade.RECOVERY_ELECTION(election_data)
+
+        # Wait for candidates to be collected through the message handler
+        election_timeout = time.time() + 2.0  # 2 seconds to collect candidates
+        while time.time() < election_timeout:
+            await asyncio.sleep(0.1)
+
+        # Determine the winner (node with lowest ID)
+        candidates = self.active_elections.get(failed_node_id, {})
+
+        if not candidates:
+            logging.warning(f"No candidates found for failed node {failed_node_id}, assuming self as winner")
+            return self.network_facade.node_id
+
+        winner = min(candidates.keys())
+
+        logging.info(f"Election for node recovery {failed_node_id}: winner is {winner}")
+
+        # Clean up election data
+        del self.active_elections[failed_node_id]
+
+        return winner
+
+
+
+    async def _become_recovery_node(self, failed_node_id: str, active_evaluations: Dict[str, List[str]]):
+        """
+        Este nó foi eleito para ser o nó de recuperação.
+        Assume a responsabilidade pelas avaliações do nó falho.
+        """
+        # Registrar no log quais avaliações estão sendo recuperadas
+        for eval_id, projects in active_evaluations.items():
+            logging.info(f"Taking responsibility for assessment {eval_id} with {len(projects)} projects")
+
+            # Atualizar o cache para refletir que este nó agora é responsável
+            for project_name in projects:
+                if project_name in self.network_cache["projects"]:
+                    # Atualizar o nó responsável no cache
+                    node_addr = f"{self.outside_ip}:{self.outside_port}"
+                    self.network_cache["projects"][project_name]["node"] = node_addr
+
+                    # Anunciar mudança de responsabilidade
+                    self.network_facade.EVALUATION_RESPONSIBILITY_UPDATE({
+                        "project_name": project_name,
+                        "new_node": node_addr,
+                        "eval_id": eval_id
+                    })
+
+                    # Add pending/running modules to the task priority queue
+                    modules_added = 0
+                    for module_name, module_data in self.network_cache["projects"][project_name].get("modules", {}).items():
+                        if module_data.get("status") in ["pending", "running"]:
+                            # Reset status to pending to ensure it gets processed
+                            self.network_cache["projects"][project_name]["modules"][module_name]["status"] = "pending"
+
+                            # Add to priority queue
+                            await self.task_priority_queue.put((project_name, module_name))
+                            modules_added += 1
+
+                    if modules_added > 0:
+                        logging.info(f"Added {modules_added} modules from project {project_name} to priority queue")
+
+        # Propagar as alterações do cache
+        await self._propagate_cache()
+
+        logging.info(f"Successfully took responsibility for evaluations from node {failed_node_id}")
+
+
+
+
+    async def _handle_evaluation_responsibility_update(self, message: dict, _addr: Tuple[str, int]):
+        """Processa atualizações de responsabilidade por projeto"""
+        data = message.get("data", {})
+        project_name = data.get("project_name")
+        new_node = data.get("new_node")
+        eval_id = data.get("eval_id")
+
+        if project_name and new_node and project_name in self.network_cache["projects"]:
+            # Atualizar o nó responsável no cache
+            self.network_cache["projects"][project_name]["node"] = new_node
+            logging.info(f"Responsibility for the project {project_name} transferred to {new_node}")
+
+            # Atualizar tarefas em execução, se houver
+            for task_id, (task_addr, timestamp) in list(self.task_responsibilities.items()):
+                if task_id.startswith(f"{project_name}::"):
+                    # Extrair as partes do task_id
+                    _, module = task_id.split("::")
+
+                    # Atualizar o endereço para o novo nó responsável
+                    ip, port_str = new_node.split(":")
+                    new_addr = (ip, int(port_str))
+
+                    # Se este nó estiver processando uma tarefa deste projeto,
+                    # deve enviar o resultado para o novo nó responsável
+                    self.task_responsibilities[task_id] = (new_addr, timestamp)
+                    logging.info(f"Updating result destination for task {task_id}: {new_addr}")
+
+
+
+    async def _handle_recovery_election(self, message: dict, _addr: Tuple[str, int]):
+        """Process election messages for node recovery"""
+        data = message.get("data", {})
+        failed_node_id = data.get("failed_node")
+        candidate_id = data.get("candidate_id")
+        timestamp = data.get("timestamp", time.time())
+
+        if not failed_node_id or not candidate_id:
+            logging.error(f"Invalid election message: {message}")
+            return
+
+        # Store candidate information
+        if failed_node_id not in self.active_elections:
+            self.active_elections[failed_node_id] = {}
+
+        self.active_elections[failed_node_id][candidate_id] = timestamp
+        logging.debug(f"Received election candidate {candidate_id} for failed node {failed_node_id}")
+
+
+
 
 
 

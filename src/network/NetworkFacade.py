@@ -10,11 +10,11 @@ import os
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 def generate_id():
-    """ 
+    """
     gen a "unique" id
     """
-    timestamp = int(time.time() * 1e6)  
-    rand = random.randint(10000, 99999) 
+    timestamp = int(time.time() * 1e6)
+    rand = random.randint(10000, 99999)
     return int(f"{timestamp}{rand}")
 
 class NetworkFacade:
@@ -49,7 +49,7 @@ class NetworkFacade:
 
     def is_running(self) -> bool:
         return self.protocol is not None
-        
+
     def add_peer(self, id:str, addr:tuple[str,int]) -> None:
         """
         add a peer to the list of peers
@@ -57,7 +57,7 @@ class NetworkFacade:
         if id not in self.peers:
             self.peers[id] = addr
             logging.info(f"Added peer {id} to the list of peers")
-            
+
     def remove_peer(self, id:str) -> None:
         """
         remove a peer from the list of peers
@@ -86,18 +86,18 @@ class NetworkFacade:
             logging.info(f"Peer with address {addr} already exists with ID {old_node_id}. ")
             del self.peers[old_node_id]
             new_id = old_node_id # keeping the same id
-            
+
         # Se o endereço não existir, prosseguir com a conexão normal
         while new_id in self.peers:
             new_id = str(generate_id())
-        
+
         mssg = Message(
             MessageType.CONNECT_REP,
             {"peers": self.peers.copy(), "id": self.node_id, "given_id": new_id},
             os.environ.get("OUTSIDE_IP"),       #type: ignore
             int(os.environ.get("OUTSIDE_PORT")) #type: ignore
         )
-        
+
         self.peers[new_id] = addr
         self.protocol.send(mssg.to_dict(), addr)
 
@@ -247,6 +247,33 @@ class NetworkFacade:
         mssg = Message(
             MessageType.PROJECT_ANNOUNCE,
             info,
+            os.environ.get("OUTSIDE_IP"),       #type: ignore
+            int(os.environ.get("OUTSIDE_PORT")) #type: ignore
+        )
+        self.__send_to_all(mssg)
+
+
+    def RECOVERY_ELECTION(self, data:Dict)->None:
+        """
+        Anuncia candidatura para eleição de recuperação
+        """
+
+        mssg = Message(
+            MessageType.RECOVERY_ELECTION,
+            data,
+            os.environ.get("OUTSIDE_IP"),       #type: ignore
+            int(os.environ.get("OUTSIDE_PORT")) #type: ignore
+        )
+        self.__send_to_all(mssg)
+
+
+    def EVALUATION_RESPONSIBILITY_UPDATE(self, data:Dict)->None:
+        """
+        Anuncia que um nó assumiu responsabilidade por um projeto
+        """
+        mssg = Message(
+            MessageType.EVALUATION_RESPONSIBILITY_UPDATE,
+            data,
             os.environ.get("OUTSIDE_IP"),       #type: ignore
             int(os.environ.get("OUTSIDE_PORT")) #type: ignore
         )
