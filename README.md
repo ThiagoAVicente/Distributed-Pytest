@@ -88,7 +88,7 @@ Isso iniciará um nó (`nodeX`) com portas configuradas para comunicação UDP e
 5\. **Adicionar um Nó a uma Rede Existente**:
 
 ```bash
-HOST=ip_de_um_no_qualquer:porta_do_mesmo_no docker-compose up -d nodeX # adicionar um novo nó à rede
+HOST=ip_de_um_no_qualquer:porta_do_mesmo_no docker compose up -d nodeX # adicionar um novo nó à rede
 ```
 
 ## Uso
