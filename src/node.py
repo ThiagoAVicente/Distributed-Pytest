@@ -12,7 +12,7 @@ from functools import partial
 from typing import List, Dict, Any, Optional, Set, Tuple
 from network.message import MessageType
 from utils.test_runner import PytestRunner
-from network.NetworkFacade import Network
+from network.Network import Network
 import utils.functions as f
 
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
