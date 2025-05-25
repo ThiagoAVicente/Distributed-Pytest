@@ -17,7 +17,7 @@ def generate_id():
     rand = random.randint(10000, 99999)
     return int(f"{timestamp}{rand}")
 
-class NetworkFacade:
+class Network:
 
     """
     NetworkFacade is a class that handles the network communication for the node.
@@ -211,6 +211,18 @@ class NetworkFacade:
         mssg = Message(
             MessageType.TASK_RESULT,
             result,
+            os.environ.get("OUTSIDE_IP"),       #type: ignore
+            int(os.environ.get("OUTSIDE_PORT")) #type: ignore
+        )
+        self.protocol.send(mssg.to_dict(), addr)
+    
+    def TASK_WORKING(self, addr:tuple, info:dict) -> None:
+        """
+        send a message to the requester that the task is being worked on
+        """
+        mssg = Message(
+            MessageType.TASK_WORKING,
+            info,
             os.environ.get("OUTSIDE_IP"),       #type: ignore
             int(os.environ.get("OUTSIDE_PORT")) #type: ignore
         )

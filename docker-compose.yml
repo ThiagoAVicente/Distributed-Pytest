@@ -15,7 +15,6 @@ services:
       - HOST=${HOST:-0}
       - API_PORT=5001
       - NODE_PORT=25000
-      - IP=${NIP:-0}
       - OUTSIDE_IP=${NIP:-0}
       - OUTSIDE_PORT=8001
       
@@ -34,7 +33,6 @@ services:
       - HOST=${HOST:-0}
       - API_PORT=5002
       - NODE_PORT=25000
-      - IP=${NIP:-0}
       - OUTSIDE_IP=${NIP:-0}
       - OUTSIDE_PORT=8002
       
@@ -53,7 +51,6 @@ services:
       - HOST=${HOST:-0}
       - API_PORT=5003
       - NODE_PORT=25000
-      - IP=${NIP:-0}
       - OUTSIDE_IP=${NIP:-0}
       - OUTSIDE_PORT=8003
       

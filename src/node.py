@@ -1,7 +1,7 @@
 """
 implements the node class
 """
-
+import shutil
 import asyncio
 import logging
 import os
@@ -12,7 +12,7 @@ from functools import partial
 from typing import List, Dict, Any, Optional, Set, Tuple
 from network.message import MessageType
 from utils.test_runner import PytestRunner
-from network.NetworkFacade import NetworkFacade
+from network.NetworkFacade import Network
 import utils.functions as f
 
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -26,7 +26,6 @@ ZIP:int = 0
 HEARTBEAT_INTERVAL:float = 5
 UPDATE_INTERVAL:float = 5
 TASK_ANNOUNCE_INTERVAL:float = 5
-response_timeout:float = 5
 
 GIVEN_TASK:int = 1
 DIRECTLY_PROJECT :int = 0
@@ -50,7 +49,7 @@ class Node:
         self.project_files:Dict[str,str] = {}               # project name : url/zip : url or zip files
 
         # network
-        self.network_facade:Optional[NetworkFacade] = None
+        self.network:Optional[Network] = None
 
         # task variables
         self.task_queue:asyncio.Queue = asyncio.Queue()
@@ -71,9 +70,10 @@ class Node:
         self.tests_passed:int = 0
         self.tests_failed:int = 0
         self.modules:int = 0
-        self.evaluation_counter:int = 0
 
+        self.evaluation_counter:int = 0
         # results
+        self.notify:Optional[List[Any]] = None # (addr, task_id, last task working)
 
         # network cache
         self.network_cache:Dict[str, Dict[str,Any]] = {
@@ -83,23 +83,21 @@ class Node:
         }
 
         # Adicionado para tolerância a falhas
-        self.last_heartbeat_received: Dict[str, float] = {}  # Rastreia o último heartbeat por nó
-        self.response_times: Dict[str, List[float]] = {}     # Tempos de resposta por nó (addr: lista de tempos)
-        self.response_timeout: float = 5.0                   # Valor inicial do timeout
-        self.timeout_update_interval: float = 10.0           # Intervalo para atualizar o timeout
-        self.last_timeout_update: float = time.time()        # Última atualização do timeout
-
+        self.last_heartbeat_received: Dict[str, float] = {}         # Rastreia o último heartbeat por nó
+        self.response_times: Dict[tuple[Any,Any], List[float]] = {}     # Tempos de resposta por nó (addr: lista de tempos)
+        self.response_timeout: float = 5.0                          # Valor inicial do timeout
+        self.timeout_update_interval: float = 10.0                  # Intervalo para atualizar o timeout
+        self.last_timeout_update: float = time.time()               # Última atualização do timeout
 
         # Election tracking
         self.active_elections: Dict[str, Dict[str, float]] = {}  # failed_node_id -> {candidate_id: timestamp}
-
 
     async def start(self):
         "starts the node"
 
         # start network
-        self.network_facade = NetworkFacade(self.address,self.connected)
-        await self.network_facade.start()
+        self.network = Network(self.address,self.connected)
+        await self.network.start()
 
         self.is_running = True
 
@@ -115,8 +113,8 @@ class Node:
         self.is_running = False
 
         # stop network
-        if self.network_facade:
-            await self.network_facade.stop()
+        if self.network:
+            await self.network.stop()
 
 
         logging.info("Node stopped")
@@ -133,7 +131,9 @@ class Node:
 
     def get_network_schema(self) -> Dict[str, List[str]]:
         "returns the network schema"
-        return {node: data["net"] for node, data in self.network_cache["status"].items()}
+        d = {node: data["net"] for node, data in self.network_cache["status"].copy().items()}
+        d[f"{self.outside_ip}:{self.outside_port}"] = self.network.get_peers_ip() # type: ignore
+        return d
 
     def get_status(self) -> Dict[str, Any]:
         "returns the status of the node"
@@ -166,10 +166,13 @@ class Node:
 
         res = {"all":{},"nodes":[]}
 
+        stats_copy = self.network_cache["status"].copy()
+        stats_copy[f"{self.outside_ip}:{self.outside_port}"] = self._get_status()
         res["nodes"] = [
-            {"addr": node, **data["stats"]} for node, data in self.network_cache["status"].items()
+            {"addr": node, **data["stats"]} for node, data in stats_copy.items()
         ]
-        res["all"] = sum_status(self.network_cache["status"])
+        res["nodes"].append
+        res["all"] = sum_status(stats_copy)
 
         return res
 
@@ -181,32 +184,33 @@ class Node:
             "end_time": None
             }
 
-    def _new_project(self, project_name:str, node_addr: str):
-        self.network_cache["projects"][project_name] = {
+    def _new_project(self, project_id:str, node_addr: str, project_name:str):
+        self.network_cache["projects"][project_id] = {
+            "project_name": project_name,
             "node": node_addr,
             "modules": {}
             }
 
-    def _new_module(self,project_name:str, module_name:str):
-        self.network_cache["projects"][project_name]["modules"][module_name] = {
+    def _new_module(self,project_id:str, module_name:str):
+        self.network_cache["projects"][project_id]["modules"][module_name] = {
             "passed": 0,
             "failed": 0,
             "time": 0,
             "status": "pending"
             }
 
-    def _new_task(self,addr:Tuple[str,int],project_name:str, module_name:str, eval_id: Optional[str] = None):
+    def _new_task(self,addr:Tuple[str,int],project_id:str, module_name:str, eval_id: Optional[str] = None):
         "creates a new task entry"
-        self.task_results[f"{project_name}::{module_name}"] = {
-                "task_id": f"{project_name}::{module_name}",
+        self.task_results[f"{project_id}::{module_name}"] = {
+                "task_id": f"{project_id}::{module_name}",
                 "node": addr,
-                "project_name": project_name,
+                "project_id": project_id,
                 "module": module_name,
                 "passed": 0,
                 "failed": 0,
                 "time": 0
             }
-        self.processed_projects.add(project_name)
+        self.processed_projects.add(project_id)
         if eval_id:
             self.processed_evaluations.add(eval_id)
 
@@ -215,58 +219,49 @@ class Node:
 
         # get evaluation id
         self.evaluation_counter += 1
-        eval_id = f"{self.network_facade.node_id}{self.evaluation_counter}" #type: ignore
+        eval_id = f"{self.network.node_id}{self.evaluation_counter}" #type: ignore
         node_addr = f"{self.outside_ip}:{self.outside_port}"
 
         # download evaluation
-        eval_dir = os.path.join(os.getcwd(), eval_id)
-        if await f.bytes_2_folder(zip_bytes, eval_dir):
+        project_names =  await f.bytes_2_folder(zip_bytes)
+        project_ids = []
 
+        for project_name in project_names:
             self._new_evaluation(eval_id)
             self.network_cache["evaluations"][eval_id]["start_time"] = time.time()
-            project_names = []
+            project_id = str(time.time()) + self.network.node_id # type: ignore
+            project_ids.append(project_id)
 
-            # get amount of folders inside the zip
-            for project_name in os.listdir(eval_dir):
-                project_path = os.path.join(eval_dir, project_name)
-                if os.path.isdir(project_path):
+            # move project_name to project_id
+            shutil.move(project_name, project_id)
 
-                    # check if project was already evaluated
-                    if project_name in self.network_cache["projects"]:
+            self.network_cache["evaluations"][eval_id]["projects"].append(project_id)
 
-                        # remove project folder
-                        await self.cleanup_project(project_path)
-                        continue
+            file_bytes:bytes = await f.folder_2_bytes(project_id)
+            file_b64 = base64.b64encode(file_bytes).decode('utf-8')
+            self.project_files[project_id] = file_b64
 
-                    self.network_cache["evaluations"][eval_id]["projects"].append(project_name)
+            self._new_project(project_id, node_addr,project_name)
 
-                    file_bytes:bytes = await f.folder_2_bytes(project_path)
-                    file_b64 = base64.b64encode(file_bytes).decode('utf-8')
-                    self.project_files[project_name] = file_b64
+            self.network.PROJECT_ANNOUNCE( # type: ignore
+                {
+                "project_id": project_id,
+                "api_port": os.environ.get("API_PORT", "5000"),
+                }
+            )
 
-                    self._new_project(project_name, node_addr)
+        await self._propagate_cache()
+        
+        # retrive modules
+        info = {
+            "eval_id": eval_id,
+            "project_ids": project_ids
+        }
 
-                    self.network_facade.PROJECT_ANNOUNCE( # type: ignore
-                        {
-                        "project_name": project_name,
-                        "api_port": os.environ.get("API_PORT", "5000"),
-                        "eval_id": eval_id,
-                        }
-                    )
+        logging.debug("retrieve tasks")
+        asyncio.create_task(self.retrieve_tasks(info, type=ZIP))
 
-                    project_names.append(project_name)
-
-            # retrive modules
-            info = {
-                "eval_id": eval_id,
-                "project_names": project_names
-            }
-
-            logging.debug("retrieve tasks")
-            asyncio.create_task(self.retrieve_tasks(info, type=ZIP))
-            await self._propagate_cache()
-
-            return eval_id
+        return eval_id
 
         return None
 
@@ -280,7 +275,7 @@ class Node:
 
         # get evaluation id
         self.evaluation_counter += 1
-        eval_id = f"{self.network_facade.node_id}{self.evaluation_counter}" #type: ignore
+        eval_id = f"{self.network.node_id}{self.evaluation_counter}" #type: ignore
 
         # create evaluation entry
         self._new_evaluation(eval_id)
@@ -303,7 +298,7 @@ class Node:
 
         eval_id = info["eval_id"]
         node_addr = f"{self.outside_ip}:{self.outside_port}"
-        added = False
+        added = False # marks if any project was added
 
         if type == URL:
             token = info["token"]
@@ -315,56 +310,53 @@ class Node:
                 if not res:
                     continue
 
-                project_name, new_project = res
-                logging.info(f"Project {project_name} downloaded")
+                project_id, project_name = res
+                logging.info(f"Project {project_id} downloaded")
 
                 self.network_cache["evaluations"][eval_id]["projects"] = list(
-                    set(self.network_cache["evaluations"][eval_id]["projects"]) | {project_name}
+                    set(self.network_cache["evaluations"][eval_id]["projects"]) | {project_id}
                 )
 
-                if not new_project:
-                    continue
                 added = True
-                self._new_project(project_name, node_addr)
+                self._new_project(project_id, node_addr, project_name)
 
                 test_runner = PytestRunner(os.getcwd())
-                modules = await test_runner.get_modules(project_name)
+                modules = await test_runner.get_modules(project_id)
 
                 if modules:
                     logging.debug(f"Modules: {modules}")
-                    self.network_cache["projects"][project_name]["modules"] = {
+                    self.network_cache["projects"][project_id]["modules"] = {
                         module: {"passed": 0, "failed": 0, "time": 0, "status": "pending"}
                         for module in modules
                     }
 
                     # add to task queue
                     for module in modules:
-                        await self.task_queue.put((project_name, module))
+                        await self.task_queue.put((project_id, module))
 
             await asyncio.sleep(0.01)
 
-
         elif type == ZIP:
-            projects = info["project_names"]
+            projects = info["project_ids"]
             logging.info(f"Projects: {projects}")
 
             test_runner = PytestRunner(os.getcwd())
 
-            for project_name in projects:
-                project_path = os.path.join(os.getcwd(), eval_id, project_name)
-
+            for project_id in projects:
+                project_path = os.path.join(os.getcwd(), project_id)
+                
                 # get modules per project
                 modules = await test_runner.get_modules(project_path)
 
                 if modules:
-                    self.network_cache["projects"][project_name]["modules"] = {
+                    self.network_cache["projects"][project_id]["modules"] = {
                         module: {"passed": 0, "failed": 0, "time": 0, "status": "pending"}
                         for module in modules
                     }
-
+                    added = True
                     # add to task queue
                     for module in modules:
-                        await self.task_queue.put((project_name, module))
+                        await self.task_queue.put((project_id, module))
 
             await asyncio.sleep(0.01)
 
@@ -399,10 +391,10 @@ class Node:
         total_failed = 0
 
         # iterate through projects
-        for project_name in eval_data.get("projects", []):
+        for project_id in eval_data.get("projects", []):
 
-            project_data = self.network_cache["projects"].get(project_name, {})
-
+            project_data = self.network_cache["projects"].get(project_id, {})
+            project_name = project_data.get("project_name", "Unknown Project")
             project_passed = sum(m["passed"] for m in project_data.get("modules", {}).values())
             project_failed = sum(m["failed"] for m in project_data.get("modules", {}).values())
             total_tests = project_passed + project_failed
@@ -454,7 +446,7 @@ class Node:
             result["summary"]["fail_percentage"] = round(total_failed / total_tests * 100, 2)
 
         if eval_data["start_time"] and eval_data["end_time"]:
-            result["summary"]["time_elapsed"] = eval_data["end_time"] - eval_data["start_time"]
+            result["time_elapsed"] = eval_data["end_time"] - eval_data["start_time"]
 
         return result
 
@@ -474,33 +466,33 @@ class Node:
 
                 # external tasks are priority
                 if self.external_task:
-                    project_name, module = self.external_task
-                    task_id = f"{project_name}::{module}"
+                    project_id, module = self.external_task
+                    task_id = f"{project_id}::{module}"
                     self.external_task = None
                     source = GIVEN_TASK
 
                 # If priority queue not empty, it should be handled fisrt
                 elif not self.task_priority_queue.empty():
                     # Get one task from the priority queue
-                    project_name, module = await asyncio.wait_for(self.task_priority_queue.get(), timeout=1)
-                    logging.info(f"Processing high priority task {project_name}::{module}")
+                    project_id, module = await asyncio.wait_for(self.task_priority_queue.get(), timeout=1)
+                    logging.info(f"Processing high priority task {project_id}::{module}")
 
                 else:
-                    project_name, module = await asyncio.wait_for(self.task_queue.get(), timeout=1)
+                    project_id, module = await asyncio.wait_for(self.task_queue.get(), timeout=1)
 
                 self.is_working = True
-                self.network_cache["projects"][project_name]["modules"][module]["status"] = "running"
+                self.network_cache["projects"][project_id]["modules"][module]["status"] = "running"
                 await self._propagate_cache()
 
                 test_runner = PytestRunner(os.getcwd())
-                logging.debug(f"Processing {project_name}::{module}")
+                logging.debug(f"Processing {project_id}::{module}")
 
-                result = await test_runner.run_tests(project_name, module)
+                result = await test_runner.run_tests(project_id, module)
                 if result:
 
-                    self.processed_projects.add(project_name)
+                    self.processed_projects.add(project_id)
                     for e_id, e_data in self.network_cache["evaluations"].items():
-                        if project_name in e_data["projects"]:
+                        if project_id in e_data["projects"]:
                             self.processed_evaluations.add(e_id)
 
                     # update node stats
@@ -509,17 +501,17 @@ class Node:
                     self.modules += 1
 
                     if source == DIRECTLY_PROJECT:
-                        logging.debug(f"Processed {project_name}::{module}")
+                        logging.debug(f"Processed {project_id}::{module}")
                         # update stats
 
                         # update project status
-                        self.network_cache["projects"][project_name]["modules"][module]["passed"] = result.passed
-                        self.network_cache["projects"][project_name]["modules"][module]["failed"] = result.failed
-                        self.network_cache["projects"][project_name]["modules"][module]["status"] = "finished"
-                        self.network_cache["projects"][project_name]["modules"][module]["time"] = result.time
+                        self.network_cache["projects"][project_id]["modules"][module]["passed"] = result.passed
+                        self.network_cache["projects"][project_id]["modules"][module]["failed"] = result.failed
+                        self.network_cache["projects"][project_id]["modules"][module]["status"] = "finished"
+                        self.network_cache["projects"][project_id]["modules"][module]["time"] = result.time
 
                     elif source == GIVEN_TASK:
-                        logging.debug(f"Processed {project_name}::{module} from task {task_id}")
+                        logging.debug(f"Processed {project_id}::{module} from task {task_id}")
                         # update stats
                         if not task_id:
                             logging.error("Task ID not found")
@@ -532,11 +524,11 @@ class Node:
                         addr = self.task_results[task_id]["node"]
 
                         # respond to the node that requested the task
-                        self.network_facade.TASK_RESULT(addr, self.task_results[task_id]) # type: ignore
+                        self.network.TASK_RESULT(addr, self.task_results[task_id]) # type: ignore
                         logging.debug(f"Sending task result to {addr}")
 
                     for e_id, e_data in self.network_cache["evaluations"].items():
-                        if project_name in e_data["projects"]:
+                        if project_id in e_data["projects"]:
                             all_finished = all(
                                 self.network_cache["projects"][p]["modules"][m]["status"] == "finished"
                                 for p in e_data["projects"]
@@ -547,9 +539,12 @@ class Node:
 
                     await self._propagate_cache()
 
-                else:
-                    logging.error(f"Error processing {project_name}::{module}")
 
+                else:
+                    logging.error(f"Error processing {project_id}::{module}")
+
+
+                # update project status
                 self.is_working = False
 
             except asyncio.TimeoutError:
@@ -566,49 +561,37 @@ class Node:
         logging.debug("Node stopped processing queue")
         return
 
-    async def download_project(self, url: str, token: Optional[str] = None, eval_id: Optional[str] = None) -> Optional[Tuple[str, bool]]:
+    async def download_project(self, url: str, token: str , eval_id: str) -> Optional[Tuple[str, str]]:
         "downloads the project from the given url"
         try:
             if url.startswith("https://github.com") :
 
-                res:Optional[str] = await f.download_github_repo(url, token)
+                project_id = str(time.time()) + self.network.node_id # type: ignore
+                res:Optional[str] = await f.download_github_repo(url, token, project_id)
+
                 if not res:
                     return None
 
-                # Extract just the project name (base name) from the path
-                project_name = os.path.basename(res)
+                project_name = res
 
-                # check if project name was already processed
-                if project_name in self.network_cache["projects"]:
-                    logging.info(f"Project {project_name} already processed")
-                    if eval_id:
-                        self.network_cache["evaluations"].setdefault(eval_id, {"projects": [], "start_time": time.time(), "end_time": None})
-                        self.network_cache["evaluations"][eval_id]["projects"] = list(
-                            set(self.network_cache["evaluations"][eval_id]["projects"]) | {project_name}
-                        )
-                        await self._propagate_cache()
-                    return project_name, False
-
-                self.urls[project_name] = (url, token or "")
+                self.urls[project_id] = (url, token or "")
 
                 # anounce new project to nodes
                 node_addr = f"{self.outside_ip}:{self.outside_port}"
-                self._new_project(project_name, node_addr)
-                self.network_facade.PROJECT_ANNOUNCE( # type: ignore
+                self._new_project(project_id, node_addr, project_name)
+                self.network.PROJECT_ANNOUNCE( # type: ignore
                     {
-                    "project_name": project_name,
+                    "project_id": project_id,
                     "api_port": os.environ.get("API_PORT", "5000"),
-                    "eval_id": eval_id,
                     }
                 )
-                if eval_id:
-                    self.network_cache["evaluations"].setdefault(eval_id, {"projects": [], "start_time": time.time(), "end_time": None})
-                    self.network_cache["evaluations"][eval_id]["projects"] = list(
-                        set(self.network_cache["evaluations"][eval_id]["projects"]) | {project_name}
-                    )
+                self.network_cache["evaluations"].setdefault(eval_id, {"projects": [], "start_time": time.time(), "end_time": None})
+                self.network_cache["evaluations"][eval_id]["projects"] = list(
+                    set(self.network_cache["evaluations"][eval_id]["projects"]) | {project_id}
+                )
                 await self._propagate_cache()
 
-                return project_name, True
+                return project_id,  project_name
 
             else:
                 logging.error(f"Unsupported url: {url}")
@@ -618,14 +601,6 @@ class Node:
             logging.error(f"Error downloading project: {e}")
             return None
 
-    async def cleanup_project(self, project_name: str):
-        " remove project dir "
-        try:
-            loop = asyncio.get_running_loop()
-            await loop.run_in_executor(None, self._remove_directory, project_name)
-        except Exception as e:
-            logging.error(f"Error cleaning up project: {e}")
-            return False
 
     def _remove_directory(self, path: str):
         """Remove a directory and all its contents"""
@@ -650,12 +625,11 @@ class Node:
 
     async def connect(self):
         try:
-
             parts = self.host.split(":")
             ip = parts[0]
             port = int(parts[1])
 
-            await asyncio.wait_for( self.network_facade.connect((ip, port)), timeout=5 ) # type: ignore
+            await asyncio.wait_for( self.network.connect((ip, port)), timeout=5 ) # type: ignore
             self.connected = True
             logging.info("Connected to a network")
 
@@ -663,12 +637,10 @@ class Node:
             logging.error("Connection timed out.")
             await self.stop()
 
-
-
     def get_active_evaluations_for_node(self, node_id: str) -> Dict[str, List[str]]:
         """
         Identifica avaliações que estavam ativas no nó falho
-        Retorna: {eval_id: [project_names]}
+        Retorna: {eval_id: [project_ids]}
         """
         active_evaluations = {}
 
@@ -681,8 +653,8 @@ class Node:
             logging.info(f"Found address {node_addr} for node {node_id} in cache")
 
         # If we still don't have an address but have peers, try to find it there
-        if not node_addr and hasattr(self.network_facade, 'peers') and node_id in self.network_facade.peers:
-            peer_addr = self.network_facade.peers[node_id]
+        if not node_addr and hasattr(self.network, 'peers') and node_id in self.network.peers:
+            peer_addr = self.network.peers[node_id]
             node_addr = f"{peer_addr[0]}:{peer_addr[1]}"
             logging.info(f"Found address {node_addr} for node {node_id} in peers")
 
@@ -701,9 +673,9 @@ class Node:
             eval_data = self.network_cache["evaluations"][eval_id]
             eval_projects = []
 
-            for project_name in eval_data.get("projects", []):
-                if project_name in self.network_cache["projects"]:
-                    project_data = self.network_cache["projects"][project_name]
+            for project_id in eval_data.get("projects", []):
+                if project_id in self.network_cache["projects"]:
+                    project_data = self.network_cache["projects"][project_id]
                     project_node = project_data.get("node", "")
 
                     # Check if this project belongs to the failed node
@@ -722,8 +694,8 @@ class Node:
                                 break
 
                         if has_active_modules:
-                            eval_projects.append(project_name)
-                            logging.info(f"Project {project_name} belongs to node {node_id} and has active modules")
+                            eval_projects.append(project_id)
+                            logging.info(f"Project {project_id} belongs to node {node_id} and has active modules")
 
             # If we found projects for this evaluation, add it to the result
             if eval_projects:
@@ -747,9 +719,9 @@ class Node:
                             # Find any projects with active modules
                             eval_projects = []
 
-                            for project_name in eval_data.get("projects", []):
-                                if project_name in self.network_cache["projects"]:
-                                    project_data = self.network_cache["projects"][project_name]
+                            for project_id in eval_data.get("projects", []):
+                                if project_id in self.network_cache["projects"]:
+                                    project_data = self.network_cache["projects"][project_id]
 
                                     # Check if there are pending or running modules
                                     has_active_modules = False
@@ -759,7 +731,7 @@ class Node:
                                             break
 
                                     if has_active_modules:
-                                        eval_projects.append(project_name)
+                                        eval_projects.append(project_id)
 
                             if eval_projects:
                                 active_evaluations[eval_id] = eval_projects
@@ -772,15 +744,11 @@ class Node:
 
         return active_evaluations
 
-
-
-
-
     async def listen(self):
         "main loop for message listening"
         logging.debug("Node started listening")
 
-        if not self.network_facade or not self.network_facade.is_running():
+        if not self.network or not self.network.is_running():
             raise RuntimeError("Protocol not initialized. Ensure the protocol is started.")
 
         if not self.connected:
@@ -794,7 +762,10 @@ class Node:
 
             # Atualizar o timeout dinamico
             await self.update_response_timeout()
-
+            
+            if self.notify and current_time - self.notify[2]:
+                self.network.TASK_WORKING(self.notify[0],self.notify[1])
+                self.notify[2] = current_time
 
             for task_id, timestamp in list(self.expecting_confirm.items()):
                 if current_time - timestamp > self.response_timeout:
@@ -807,9 +778,9 @@ class Node:
             if current_time - self.last_heartbeat > HEARTBEAT_INTERVAL:
                 try:
                     self.last_heartbeat = current_time
-                    self.network_facade.HEARTBEAT({
-                        "id": self.network_facade.node_id, # type: ignore",
-                        "peers_ip": self.network_facade.get_peers_ip(), # type: ignore
+                    self.network.HEARTBEAT({
+                        "id": self.network.node_id, # type: ignore",
+                        "peers_ip": self.network.get_peers_ip(), # type: ignore
                     })
                     logging.debug("Sent heartbeat")
                 except Exception as e:
@@ -820,13 +791,13 @@ class Node:
 
             # anounce task
             if not self.task_queue.empty() and current_time - self.last_task_announce > TASK_ANNOUNCE_INTERVAL:
-                self.network_facade.TASK_ANNOUNCE()
+                self.network.TASK_ANNOUNCE()
                 self.last_task_announce = current_time
                 logging.debug("Sent task announce")
 
             # try to read message
             try:
-                message, _ = await asyncio.wait_for(self.network_facade.recv(), timeout=1)
+                message, _ = await asyncio.wait_for(self.network.recv(), timeout=1)
                 await self.process_message(message)
 
             except asyncio.CancelledError:
@@ -846,12 +817,12 @@ class Node:
 
         node_cache = {
             "addr": f"{self.outside_ip}:{self.outside_port}",
-            "peers_ip": self.network_facade.get_peers_ip(), # type: ignore
+            "peers_ip": self.network.get_peers_ip(), # type: ignore
             "evaluations": self.network_cache["evaluations"],
             "projects": self.network_cache["projects"],
             "stats": self._get_status(),
         }
-        self.network_facade.CACHE_UPDATE(node_cache) # type: ignore
+        self.network.CACHE_UPDATE(node_cache) # type: ignore
         self.last_update = time.time()
         logging.debug("Propagating cache to all nodes")
 
@@ -872,7 +843,6 @@ class Node:
         current_time = time.time()
         send_time = message.get("timestamp", None)
 
-
         # Registar tempo de resposta com timestamp
         if send_time:
             response_time = max(0.001, current_time - send_time) # Garantir que não seja negativo
@@ -886,7 +856,7 @@ class Node:
             logging.debug(f"Task announce from {addr}")
             if not self.is_working and self.task_queue.empty():
                 logging.info("Requesting task")
-                self.network_facade.TASK_REQUEST(addr) # type: ignore
+                self.network.TASK_REQUEST(addr) # type: ignore
 
         elif cmd == MessageType.TASK_REQUEST.name:
             # process task request
@@ -898,7 +868,7 @@ class Node:
 
         elif cmd == MessageType.CONNECT.name:
             logging.info(f"Received connect request from {addr}")
-            self.network_facade.CONNECT_REP(addr) # type: ignore
+            self.network.CONNECT_REP(addr) # type: ignore
 
         elif cmd == MessageType.HEARTBEAT.name:
             await self._handle_heartbeat(message, addr)
@@ -933,36 +903,40 @@ class Node:
         addr = (ip, port)
 
         send = False
+        project_id = ""
         project_name = ""
         module = ""
 
         if not self.task_priority_queue.empty():
-            project_name, module = await self.task_priority_queue.get()
+            project_id, module = await self.task_priority_queue.get()
             send = True
 
         elif not self.task_queue.empty():
-            project_name, module = await self.task_queue.get()
+            project_id, module = await self.task_queue.get()
             send = True
 
         if send:
             eval_id = None
             for e_id, e_data in self.network_cache["evaluations"].items():
-                if project_name in e_data["projects"]:
+                if project_id in e_data["projects"]:
                     eval_id = e_id
                     break
 
+            project_name = self.network_cache["projects"].get(project_id, {}).get("project_name", project_id)
+
             # send the zip file to the node
             data = {
-                "project_name": project_name,
+                "project_id": project_id,
                 "module": module,
+                "project_name": project_name,
                 "api_port": os.environ.get("API_PORT", "5000"),
                 "eval_id": eval_id,
             }
 
-            self.expecting_confirm[f"{project_name}::{module}"] = time.time()
-            self.task_responsibilities[f"{project_name}::{module}"] = (addr, time.time()) # type: ignore
-            self.network_facade.TASK_SEND(addr, data) # type: ignore
-            logging.debug(f"Sending task {project_name}::{module} to {addr}")
+            self.expecting_confirm[f"{project_id}::{module}"] = time.time()
+            self.task_responsibilities[f"{project_id}::{module}"] = (addr, time.time()) # type: ignore
+            self.network.TASK_SEND(addr, data) # type: ignore
+            logging.debug(f"Sending task {project_id}::{module} to {addr}")
 
     async def _handle_cache_update(self, message: dict, _addr: Tuple[str, int]):
 
@@ -994,26 +968,27 @@ class Node:
 
             if self.network_cache["evaluations"][e_id]["end_time"] is not None:
                 # clean
-                for project_name in self.network_cache["evaluations"][e_id]["projects"]:
+                for project_id in self.network_cache["evaluations"][e_id]["projects"]:
 
-                    self._remove_directory(project_name)
+                    self._remove_directory(project_id)
 
-        for p_name, p_data in projects.items():
-            if p_name not in self.network_cache["projects"]:
-                self.network_cache["projects"][p_name] = {
+        for p_id, p_data in projects.items():
+            if p_id not in self.network_cache["projects"]:
+                self.network_cache["projects"][p_id] = {
                     "node": p_data["node"],
-                    "modules": p_data["modules"]
+                    "modules": p_data["modules"],
+                    "project_name": p_data.get("project_name"),
                 }
             else:
                 #merge projects
-                current_modules = self.network_cache["projects"][p_name]["modules"]
+                current_modules = self.network_cache["projects"][p_id]["modules"]
                 for module_name, module_data in p_data["modules"].items():
                     if module_name not in current_modules or module_data["status"] == "finished":
                         current_modules[module_name] = module_data
         logging.debug(f"Cache updated from {saddr}")
 
     async def _handle_task_working(self, message: dict, _addr: Tuple[str, int]):
-        task_id = message["data"]["task_id"]
+        task_id = message["data"]
         ip = message.get("ip", None)
         port = message.get("port", None)
         addr = (ip, port)
@@ -1040,6 +1015,7 @@ class Node:
             logging.debug(f"Task {self.external_task} already in progress")
             return
 
+        project_id = message["data"]["info"]["project_id"]
         project_name = message["data"]["info"]["project_name"]
         module = message["data"]["info"]["module"]
         api_port = message["data"]["info"]["api_port"]
@@ -1048,11 +1024,11 @@ class Node:
         port = message.get("port", None)
         addr = (ip, port)
 
-        def get_file_bytes(project_name: str) -> Optional[Tuple[Any, int]]:
+        def get_file_bytes(project_id: str) -> Optional[Tuple[Any, int]]:
             import requests
-            logging.debug(f"Getting file {project_name} from {addr}")
+            logging.debug(f"Getting file {project_id} from {addr}")
             try:
-                url = f"http://{addr[0]}:{api_port}/file/{project_name}"
+                url = f"http://{addr[0]}:{api_port}/file/{project_id}"
                 response = requests.get(url, headers={"Content-Type": "application/json"})
                 if response.status_code == 200:
                     if response.json()["type"] == URL:
@@ -1061,9 +1037,10 @@ class Node:
                         token = response.json()["token"]
 
                         return (url, token), URL
+                    project_name = response.json().get("project_name", project_id)
                     file_b64 = response.json()["bytes"]
                     file_bytes = base64.b64decode(file_b64)
-                    return file_bytes, ZIP
+                    return (file_bytes,project_name), ZIP
 
                 # request failed
                 logging.error(f"Error getting file: {response.status_code}")
@@ -1072,15 +1049,15 @@ class Node:
                 return None
 
         # check if folder was already downloaded
-        if project_name in self.urls or project_name in self.project_files:
-            self.external_task = (project_name, module)
-            self._new_task(addr, project_name, module, eval_id)
-            self.network_facade.TASK_CONFIRM(addr, # type: ignore
-                {"task_id": f"{project_name}::{module}"})
+        if project_id in self.urls or project_id in self.project_files:
+            self.external_task = (project_id, module)
+            self._new_task(addr, project_id, module, eval_id)
+            self.network.TASK_CONFIRM(addr, # type: ignore
+                {"task_id": f"{project_id}::{module}"})
             if eval_id:
                 self.network_cache["evaluations"].setdefault(eval_id, {"projects": [], "start_time": time.time(), "end_time": None})
                 self.network_cache["evaluations"][eval_id]["projects"] = list(
-                    set(self.network_cache["evaluations"][eval_id]["projects"]) | {project_name}
+                    set(self.network_cache["evaluations"][eval_id]["projects"]) | {project_id}
                 )
                 await self._propagate_cache()
             return
@@ -1088,81 +1065,86 @@ class Node:
         # get file bytes
         try:
             loop = asyncio.get_running_loop()
-            res = await loop.run_in_executor(None, partial(get_file_bytes, project_name))
+            res = await loop.run_in_executor(None, partial(get_file_bytes, project_id))
 
             if res:
                 info, type = res
                 node_addr = f"{addr[0]}:{addr[1]}"
                 if type == URL:
+                    url,token = info
                     # download url from github
-                    url, token = info
-                    if await f.download_github_repo(url, token):
-                        self.urls[project_name] = (url, token)
-                        self._new_project(project_name, node_addr)
-                        self._new_module(project_name, module)
-                        self.external_task = (project_name, module)
-                        self._new_task(addr, project_name, module, eval_id)
-                        self.network_facade.PROJECT_ANNOUNCE({ # type: ignore
-                            "project_name": project_name,
-                            "api_port": os.environ.get("API_PORT", "5000"),
-                            "eval_id": eval_id
-                        })
-                        if eval_id:
-                            self.network_cache["evaluations"].setdefault(eval_id, {"projects": [], "start_time": time.time(), "end_time": None})
-                            self.network_cache["evaluations"][eval_id]["projects"] = list(
-                                set(self.network_cache["evaluations"][eval_id]["projects"]) | {project_name}
-                            )
-                        await self._propagate_cache()
+
+                    project_name = await f.download_github_repo(url, token,project_id)
+                    if not project_name:
+                        logging.error(f"Error downloading project {project_id} from {url}")
+                        return
+
+                    self.urls[project_id] = (url, token)
+
 
                 elif type == ZIP:
-                    file_bytes = info
-                    await f.bytes_2_folder(file_bytes, os.path.join(os.getcwd(), project_name))
-                    self.project_files[project_name] = base64.b64encode(file_bytes).decode('utf-8')
-                    self._new_project(project_name, node_addr)
-                    self._new_module(project_name, module)
-                    self.external_task = (project_name, module)
-                    self._new_task(addr, project_name, module, eval_id)
-                    self.network_facade.PROJECT_ANNOUNCE({ # type: ignore
-                        "project_name": project_name,
-                        "api_port": os.environ.get("API_PORT", "5000"),
-                        "eval_id": eval_id
-                    })
-                    if eval_id:
-                        self.network_cache["evaluations"].setdefault(eval_id, {"projects": [], "start_time": time.time(), "end_time": None})
-                        self.network_cache["evaluations"][eval_id]["projects"] = list(
-                            set(self.network_cache["evaluations"][eval_id]["projects"]) | {project_name}
-                        )
-                    await self._propagate_cache()
+                    file_bytes,project_name = info
+                    await f.bytes_2_folder(file_bytes)
+                    self.project_files[project_id] = base64.b64encode(file_bytes).decode('utf-8')
+
+                self._new_project(project_id, node_addr, project_name)
+                self._new_module(project_id, module)
+                self.external_task = (project_id, module)
+                self._new_task(addr, project_id, module, eval_id)
+                self.network.PROJECT_ANNOUNCE({ # type: ignore
+                    "project_id": project_id,
+                    "api_port": os.environ.get("API_PORT", "5000"),
+                })
+
+                await self._propagate_cache()
 
                 # notify node
-                self.network_facade.TASK_CONFIRM(addr, # type: ignore
-                    {"task_id": f"{project_name}::{module}"})
+                self.network.TASK_CONFIRM(addr, # type: ignore
+                    {"task_id": f"{project_id}::{module}"})
         except Exception:
             logging.error(f"Error handling task send: {traceback.format_exc()}")
 
     async def _handle_task_result(self, message: dict, _addr: Tuple[str, int]):
         """Process task result message from a worker node"""
-        task_id = message["data"]["task_id"]
-        project_name = message["data"]["project_name"]
-        module = message["data"]["module"]
-        ip = message.get("ip", None)
-        port = message.get("port", None)
-        addr = (ip, port)
+        data = message["data"]
+        task_id = data["task_id"]
+        project_id = data["project_id"]
+        module = data["module"]
+        addr = (message.get("ip"), message.get("port"))
 
         # Get the current node's address
         my_addr = f"{self.outside_ip}:{self.outside_port}"
-
         # Obter o nó responsável atual do cache
         responsible_node = None
         responsible_node_str = None
-        if project_name in self.network_cache["projects"]:
-            responsible_node_str = self.network_cache["projects"][project_name].get("node")
+
+        if project_id in self.network_cache["projects"]:
+            responsible_node_str = self.network_cache["projects"][project_id].get("node")
             if responsible_node_str:
                 try:
                     ip, port_str = responsible_node_str.split(":")
                     responsible_node = (ip, int(port_str))
                 except Exception as e:
                     logging.warning(f"Error parsing responsible node address {responsible_node_str}: {e}")
+
+        def update_cache(project_id:str, module:str, message:dict):
+            # update project status
+            self.network_cache["projects"][project_id]["modules"][module]["passed"] = message["data"]["passed"]
+            self.network_cache["projects"][project_id]["modules"][module]["failed"] = message["data"]["failed"]
+            self.network_cache["projects"][project_id]["modules"][module]["status"] = "finished"
+            self.network_cache["projects"][project_id]["modules"][module]["time"] = message["data"]["time"]
+
+            # update project status
+            for eval_id, eval_data in self.network_cache["evaluations"].items():
+                if project_id in eval_data["projects"]:
+                    self.processed_evaluations.add(eval_id)
+                    all_finished = all(
+                        self.network_cache["projects"][p]["modules"][m]["status"] == "finished"
+                        for p in eval_data["projects"]
+                        for m in self.network_cache["projects"][p]["modules"]
+                    )
+                    if all_finished and not eval_data["end_time"]:
+                        eval_data["end_time"] = time.time()
 
         # Check if this node is the responsible node
         is_responsible = responsible_node_str == my_addr
@@ -1171,120 +1153,53 @@ class Node:
         if task_id in self.task_responsibilities:
             original_addr, _ = self.task_responsibilities[task_id]
 
-            # Se o nó responsável mudou e não é este nó, encaminhar o resultado
-            if responsible_node and addr != responsible_node and not is_responsible:
+            # Se o nó responsável mudou e não é este nó, encaminhar o resultado ( "nunca" chega aqui mas é bom ter )
+            if responsible_node and not is_responsible:
                 if original_addr != responsible_node:
                     logging.info(f"Forwarding task result {task_id} to the new responsible node {responsible_node}")
-                    self.network_facade.TASK_RESULT(responsible_node, message["data"])
-                    return  # Return early to avoid processing the result locally
+                    self.network.TASK_RESULT(responsible_node, data) # type: ignore
+                return  # Return early to avoid processing the result locally
 
             # Process the result if this node is still responsible or is the new responsible node
             if addr == original_addr or is_responsible:
                 # remove responsibility entry
                 del self.task_responsibilities[task_id]
 
-                # update project status
-                self.network_cache["projects"][project_name]["modules"][module]["passed"] = message["data"]["passed"]
-                self.network_cache["projects"][project_name]["modules"][module]["failed"] = message["data"]["failed"]
-                self.network_cache["projects"][project_name]["modules"][module]["status"] = "finished"
-                self.network_cache["projects"][project_name]["modules"][module]["time"] = message["data"]["time"]
-
-                # update project status
-                self.processed_projects.add(project_name)
-                for eval_id, eval_data in self.network_cache["evaluations"].items():
-                    if project_name in eval_data["projects"]:
-                        self.processed_evaluations.add(eval_id)
-                        all_finished = all(
-                            self.network_cache["projects"][p]["modules"][m]["status"] == "finished"
-                            for p in eval_data["projects"]
-                            for m in self.network_cache["projects"][p]["modules"]
-                        )
-                        if all_finished and not eval_data["end_time"]:
-                            eval_data["end_time"] = time.time()
+                update_cache(project_id, module, message)
 
                 # inform node that successfully finished
                 logging.debug(f"Received task result from {addr}")
-                self.network_facade.TASK_RESULT_REP(addr, {"task_id": task_id})
+                self.network.TASK_RESULT_REP(addr, {"task_id": task_id}) # type: ignore
                 await self._propagate_cache()
 
         # If this node is the new responsible node but wasn't originally responsible
-        elif is_responsible and responsible_node_str == my_addr:
+        elif is_responsible :
             logging.info(f"Received task result {task_id} as the new responsible node")
 
             # update project status
-            if project_name in self.network_cache["projects"] and module in self.network_cache["projects"][project_name]["modules"]:
-                self.network_cache["projects"][project_name]["modules"][module]["passed"] = message["data"]["passed"]
-                self.network_cache["projects"][project_name]["modules"][module]["failed"] = message["data"]["failed"]
-                self.network_cache["projects"][project_name]["modules"][module]["status"] = "finished"
-                self.network_cache["projects"][project_name]["modules"][module]["time"] = message["data"]["time"]
+            if project_id in self.network_cache["projects"] and module in self.network_cache["projects"][project_id]["modules"]:
 
-                # Update evaluation status
-                self.processed_projects.add(project_name)
-                for eval_id, eval_data in self.network_cache["evaluations"].items():
-                    if project_name in eval_data["projects"]:
-                        self.processed_evaluations.add(eval_id)
-                        all_finished = all(
-                            self.network_cache["projects"][p]["modules"][m]["status"] == "finished"
-                            for p in eval_data["projects"]
-                            for m in self.network_cache["projects"][p]["modules"]
-                        )
-                        if all_finished and not eval_data["end_time"]:
-                            eval_data["end_time"] = time.time()
+                update_cache(project_id, module, message)
 
                 # inform node that successfully finished
-                self.network_facade.TASK_RESULT_REP(addr, {"task_id": task_id})
+                self.network.TASK_RESULT_REP(addr, {"task_id": task_id}) #type: ignore
                 await self._propagate_cache()
             else:
                 logging.warning(f"Received task result for unknown project/module: {task_id}")
 
-
-
-
-        if task_id in self.task_responsibilities:
-            if addr == self.task_responsibilities[task_id][0]:
-
-                # remove responsability entry
-                del self.task_responsibilities[task_id]
-
-                # update project status
-                self.network_cache["projects"][project_name]["modules"][module]["passed"] = message["data"]["passed"]
-                self.network_cache["projects"][project_name]["modules"][module]["failed"] = message["data"]["failed"]
-                self.network_cache["projects"][project_name]["modules"][module]["status"] = "finished"
-                self.network_cache["projects"][project_name]["modules"][module]["time"] = message["data"]["time"]
-
-                # update project status
-                self.processed_projects.add(project_name)
-                for eval_id, eval_data in self.network_cache["evaluations"].items():
-                    if project_name in eval_data["projects"]:
-                        self.processed_evaluations.add(eval_id)
-                        all_finished = all(
-                            self.network_cache["projects"][p]["modules"][m]["status"] == "finished"
-                            for p in eval_data["projects"]
-                            for m in self.network_cache["projects"][p]["modules"]
-                        )
-                        if all_finished and not eval_data["end_time"]:
-                            eval_data["end_time"] = time.time()
-
-
-                # inform node that sucessfully finished
-                logging.debug(f"Received task result from {addr}")
-                self.network_facade.TASK_RESULT_REP(addr, # type: ignore
-                    {"task_id": task_id})
-                await self._propagate_cache()
-
     async def _handle_project_announce(self, message: dict, _addr: Tuple[str, int]):
-        project_name = message["data"]["project_name"]
+        project_id = message["data"]["project_id"]
         api_port = message["data"]["api_port"]
         ip = message.get("ip", None)
         port = message.get("port", None)
         addr = (ip, port)
-        if project_name in self.urls or project_name in self.project_files:
+        if project_id in self.urls or project_id in self.project_files:
             return
 
         # request project
         try:
             import requests
-            url = f"http://{addr[0]}:{api_port}/file/{project_name}"
+            url = f"http://{addr[0]}:{api_port}/file/{project_id}"
             response = requests.get(url, headers={"Content-Type": "application/json"})
             if response.status_code == 200:
                 type = response.json()["type"]
@@ -1292,17 +1207,28 @@ class Node:
                     # dowanload url from github
                     url = response.json()["url"]
                     token = response.json()["token"]
-                    if res := await f.download_github_repo(url, token):
+                    if res := await f.download_github_repo(url, token,project_id):
                         self.urls[res] = (url, token)
+                    self.network.PROJECT_ANNOUNCE( # type: ignore
+                        {
+                        "project_id": project_id,
+                        "api_port": os.environ.get("API_PORT", "5000"),
+                        }
+                    )
 
                 elif type == ZIP:
                     file_bytes = base64.b64decode(response.json()["bytes"])
-                    await f.bytes_2_folder(file_bytes, os.path.join(os.getcwd(), project_name))
-                    self.project_files[project_name] = response.json()["bytes"]
+                    await f.bytes_2_folder(file_bytes)
+                    self.project_files[project_id] = response.json()["bytes"]
+                    self.network.PROJECT_ANNOUNCE( # type: ignore
+                        {
+                        "project_id": project_id,
+                        "api_port": os.environ.get("API_PORT", "5000"),
+                        }
+                    )
                 else:
                     logging.error(f"Unknown file type: {type}")
                     return
-
 
             else:
                 logging.error(f"Error getting file: {response.status_code}")
@@ -1329,7 +1255,7 @@ class Node:
         addr = (ip, port)
         node_id = message.get("data", {}).get("id", f"{addr[0]}:{addr[1]}")
         self.last_heartbeat_received[node_id] = time.time()
-        self.network_facade.add_peer(node_id,addr) # type: ignore
+        self.network.add_peer(node_id,addr) # type: ignore
         logging.debug(f"Heartbeat received from {ip}:{port}")
 
     async def check_heartbeats(self):
@@ -1341,7 +1267,7 @@ class Node:
                     logging.warning(f"Node {node_id} is considered failed.")
                     await self.handle_node_failure(node_id)
                     del self.last_heartbeat_received[node_id]  # Remove o nó falho
-                    self.network_facade.remove_peer(node_id) # type: ignore
+                    self.network.remove_peer(node_id) # type: ignore
                     if node_id in self.network_cache["status"]:
                         del self.network_cache["status"][node_id]
             await asyncio.sleep(HEARTBEAT_INTERVAL)
@@ -1356,12 +1282,11 @@ class Node:
         # 1. Verificar se há avaliações ativas no nó falho
         active_evaluations = self.get_active_evaluations_for_node(node_id)
 
-
         if active_evaluations:
             # 2. Participar da eleição para recuperação
             recovery_node = await self._elect_recovery_node(node_id, active_evaluations)
 
-            if recovery_node == self.network_facade.node_id:
+            if recovery_node == self.network.node_id: # type: ignore
                 # Este nó foi eleito para recuperação
                 logging.info(f"This node has been elected to retrieve node ratings {node_id}")
                 await self._become_recovery_node(node_id, active_evaluations)
@@ -1375,19 +1300,16 @@ class Node:
             del self.task_responsibilities[task_id]
             logging.info(f"Reassigned task {task_id} from failed node {node_id}")
 
-
     async def add_to_priority_queue(self, task_id: str):
-        """Adiciona uma tarefa à fila de prioridade, extraindo project_name e module do task_id"""
+        """Adiciona uma tarefa à fila de prioridade, extraindo project_id e module do task_id"""
         try:
-            project_name, module = task_id.split("::")
-            await self.task_priority_queue.put((project_name, module))
+            project_id, module = task_id.split("::")
+            await self.task_priority_queue.put((project_id, module))
             logging.info(f"Task {task_id} added to priority queue")
             return True
         except Exception as e:
             logging.error(f"Error adding task to priority queue: {e}")
             return False
-
-
 
     # Replace the existing _elect_recovery_node method with this implementation:
     async def _elect_recovery_node(self, failed_node_id: str, active_evaluations: Dict[str, List[str]]) -> str:
@@ -1402,19 +1324,19 @@ class Node:
             self.active_elections[failed_node_id] = {}
 
         # Add this node as a candidate
-        self.active_elections[failed_node_id][self.network_facade.node_id] = time.time()
+        self.active_elections[failed_node_id][self.network.node_id] = time.time() # type: ignore
 
         # Announce candidacy
         election_data = {
-            "candidate_id": self.network_facade.node_id,
+            "candidate_id": self.network.node_id,# type: ignore
             "failed_node": failed_node_id,
             "timestamp": time.time()
         }
 
-        self.network_facade.RECOVERY_ELECTION(election_data)
+        self.network.RECOVERY_ELECTION(election_data) # type: ignore
 
         # Wait for candidates to be collected through the message handler
-        election_timeout = time.time() + 2.0  # 2 seconds to collect candidates
+        election_timeout = time.time() + 2 * self.response_timeout  # 2 seconds to collect candidates
         while time.time() < election_timeout:
             await asyncio.sleep(0.1)
 
@@ -1423,7 +1345,7 @@ class Node:
 
         if not candidates:
             logging.warning(f"No candidates found for failed node {failed_node_id}, assuming self as winner")
-            return self.network_facade.node_id
+            return self.network.node_id # type: ignore
 
         winner = min(candidates.keys())
 
@@ -1433,8 +1355,6 @@ class Node:
         del self.active_elections[failed_node_id]
 
         return winner
-
-
 
     async def _become_recovery_node(self, failed_node_id: str, active_evaluations: Dict[str, List[str]]):
         """
@@ -1446,56 +1366,52 @@ class Node:
             logging.info(f"Taking responsibility for assessment {eval_id} with {len(projects)} projects")
 
             # Atualizar o cache para refletir que este nó agora é responsável
-            for project_name in projects:
-                if project_name in self.network_cache["projects"]:
+            for project_id in projects:
+                if project_id in self.network_cache["projects"]:
                     # Atualizar o nó responsável no cache
                     node_addr = f"{self.outside_ip}:{self.outside_port}"
-                    self.network_cache["projects"][project_name]["node"] = node_addr
+                    self.network_cache["projects"][project_id]["node"] = node_addr
 
                     # Anunciar mudança de responsabilidade
-                    self.network_facade.EVALUATION_RESPONSIBILITY_UPDATE({
-                        "project_name": project_name,
+                    self.network.EVALUATION_RESPONSIBILITY_UPDATE({ # type: ignore
+                        "project_id": project_id,
                         "new_node": node_addr,
                         "eval_id": eval_id
                     })
 
                     # Add pending/running modules to the task priority queue
                     modules_added = 0
-                    for module_name, module_data in self.network_cache["projects"][project_name].get("modules", {}).items():
+                    for module_name, module_data in self.network_cache["projects"][project_id].get("modules", {}).items():
                         if module_data.get("status") in ["pending", "running"]:
                             # Reset status to pending to ensure it gets processed
-                            self.network_cache["projects"][project_name]["modules"][module_name]["status"] = "pending"
+                            self.network_cache["projects"][project_id]["modules"][module_name]["status"] = "pending"
 
                             # Add to priority queue
-                            await self.task_priority_queue.put((project_name, module_name))
+                            await self.task_priority_queue.put((project_id, module_name))
                             modules_added += 1
 
                     if modules_added > 0:
-                        logging.info(f"Added {modules_added} modules from project {project_name} to priority queue")
+                        logging.info(f"Added {modules_added} modules from project {project_id} to priority queue")
 
         # Propagar as alterações do cache
         await self._propagate_cache()
 
         logging.info(f"Successfully took responsibility for evaluations from node {failed_node_id}")
 
-
-
-
     async def _handle_evaluation_responsibility_update(self, message: dict, _addr: Tuple[str, int]):
         """Processa atualizações de responsabilidade por projeto"""
         data = message.get("data", {})
-        project_name = data.get("project_name")
+        project_id = data.get("project_id")
         new_node = data.get("new_node")
-        eval_id = data.get("eval_id")
 
-        if project_name and new_node and project_name in self.network_cache["projects"]:
+        if project_id and new_node and project_id in self.network_cache["projects"]:
             # Atualizar o nó responsável no cache
-            self.network_cache["projects"][project_name]["node"] = new_node
-            logging.info(f"Responsibility for the project {project_name} transferred to {new_node}")
+            self.network_cache["projects"][project_id]["node"] = new_node
+            logging.info(f"Responsibility for the project {project_id} transferred to {new_node}")
 
             # Atualizar tarefas em execução, se houver
             for task_id, (task_addr, timestamp) in list(self.task_responsibilities.items()):
-                if task_id.startswith(f"{project_name}::"):
+                if task_id.startswith(f"{project_id}::"):
                     # Extrair as partes do task_id
                     _, module = task_id.split("::")
 
@@ -1507,8 +1423,6 @@ class Node:
                     # deve enviar o resultado para o novo nó responsável
                     self.task_responsibilities[task_id] = (new_addr, timestamp)
                     logging.info(f"Updating result destination for task {task_id}: {new_addr}")
-
-
 
     async def _handle_recovery_election(self, message: dict, _addr: Tuple[str, int]):
         """Process election messages for node recovery"""
@@ -1528,11 +1442,6 @@ class Node:
         self.active_elections[failed_node_id][candidate_id] = timestamp
         logging.debug(f"Received election candidate {candidate_id} for failed node {failed_node_id}")
 
-
-
-
-
-
     async def update_response_timeout(self):
         """Atualiza o response_timeout com base nos tempos de resposta observados."""
         if time.time() - self.last_timeout_update < self.timeout_update_interval:
@@ -1548,7 +1457,7 @@ class Node:
 
         # Novo timeout: média + 2 vezes o desvio padrão, com limites
         new_timeout = avg_time + 2 * std_dev
-        self.response_timeout = max(1.0, min(10.0, new_timeout))
+        self.response_timeout = max(5.0, min(10.0, new_timeout))
 
         self.last_timeout_update = time.time()
         logging.debug(f"Updated response_timeout to {self.response_timeout:.2f} seconds")
