@@ -27,7 +27,7 @@ Distributed CD Tester é um sistema baseado em Python projetado para distribuir 
 │   ├── api.py               # API REST baseada em Flask
 │   ├── node.py              # Lógica central do nó
 │   ├── network/             # Comunicação de rede
-│   │   ├── NetworkFacade.py # Abstração de rede
+│   │   ├── Network.py # Abstração de rede
 │   │   ├── message.py       # Tipos e estrutura de mensagens
 │   │   ├── protocol.py      # Protocolo UDP assíncrono
 │   ├── utils/               # Funções utilitárias
@@ -147,13 +147,13 @@ curl http://<OUTSIDE_IP>:<API_PORT>/network
 
 * **Nó (`node.py`)**: Gerencia processamento de tarefas, comunicação, tolerância a falhas e interação com a API.
 * **API Flask (`api.py`)**: Interface web para submissão de projetos e consultas.
-* **NetworkFacade (`NetworkFacade.py`)**: Abstrai a comunicação UDP entre nós, gerenciando mensagens.
+* **Network (`Network.py`)**: Abstrai a comunicação UDP entre nós, gerenciando mensagens.
 * **PytestRunner (`test_runner.py`)**: Executa testes de módulos usando `pytest` e parseia resultados.
 * **Utils (`functions.py`, `module_finder.py`)**: Funções auxiliares para manipulação de arquivos e descoberta de módulos.
 
 ### Fluxo de Operação
 
-1. **Inicialização**: Cada nó conecta-se à rede via `NetworkFacade`.
+1. **Inicialização**: Cada nó conecta-se à rede via `Network`.
 2. **Submissão de Projeto**: Projeto enviado via API, dividido em módulos de teste.
 3. **Distribuição de Tarefas**: Módulos são enfileirados e distribuídos entre nós.
 4. **Execução de Testes**: Cada nó executa os módulos atribuídos e coleta resultados.
