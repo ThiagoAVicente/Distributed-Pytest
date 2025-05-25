@@ -6,12 +6,12 @@ Distributed CD Tester é um sistema baseado em Python projetado para distribuir 
 
 ## Principais Funcionalidades
 
-* **Processamento Distribuído de Tarefas**: Divide módulos de teste de projetos submetidos e distribui-os entre nós.
-* **Tolerância a Falhas**: Usa heartbeats para detectar falhas de nós, redistribui tarefas e elege nós de recuperação.
-* **API REST**: Fornece endpoints para submeter projetos, consultar estados de avaliações e obter estatísticas da rede.
-* **Implantação Conteinerizada**: Executa nós em contêineres isolados com Docker Compose.
-* **Escalabilidade**: Suporta adição dinâmica de nós a uma rede existente.
-* **Integração com GitHub**: Baixa projetos de teste diretamente de repositórios do GitHub.
+- **Processamento Distribuído de Tarefas**: Divide módulos de teste de projetos submetidos e distribui-os entre nós.
+- **Tolerância a Falhas**: Usa heartbeats para detectar falhas de nós, redistribui tarefas e elege nós de recuperação.
+- **API REST**: Fornece endpoints para submeter projetos, consultar estados de avaliações e obter estatísticas da rede.
+- **Implantação Conteinerizada**: Executa nós em contêineres isolados com Docker Compose.
+- **Escalabilidade**: Suporta adição dinâmica de nós a uma rede existente.
+- **Integração com GitHub**: Baixa projetos de teste diretamente de repositórios do GitHub.
 
 ## Estrutura do Projeto
 
@@ -27,7 +27,7 @@ Distributed CD Tester é um sistema baseado em Python projetado para distribuir 
 │   ├── api.py               # API REST baseada em Flask
 │   ├── node.py              # Lógica central do nó
 │   ├── network/             # Comunicação de rede
-│   │   ├── Network.py # Abstração de rede
+│   │   ├── Network.py       # Abstração de rede
 │   │   ├── message.py       # Tipos e estrutura de mensagens
 │   │   ├── protocol.py      # Protocolo UDP assíncrono
 │   ├── utils/               # Funções utilitárias
@@ -38,11 +38,11 @@ Distributed CD Tester é um sistema baseado em Python projetado para distribuir 
 
 ## Requisitos
 
-* **Python**: 3.13 ou superior
-* **Docker**: Para executar nós em contêineres
-* **Docker Compose**: Para orquestrar múltiplos nós
-* **Dependências Python**: Listadas em `requirements.txt` (instaladas automaticamente no Docker)
-* **Acesso à Internet**: Para baixar dependências e repositórios do GitHub
+- **Python**: 3.13 ou superior
+- **Docker**: Para executar nós em contêineres
+- **Docker Compose**: Para orquestrar múltiplos nós
+- **Dependências Python**: Listadas em `requirements.txt` (instaladas automaticamente no Docker)
+- **Acesso à Internet**: Para baixar dependências e repositórios do GitHub
 
 ## Configuração
 
@@ -53,37 +53,27 @@ Distributed CD Tester é um sistema baseado em Python projetado para distribuir 
     cd rede-testes-distribuida
    ```
 
-
-
-
-
 2. **Configurar Variáveis de Ambiente**:
 
-    ```
-    export NIP=$(ip route get 1 | awk '{print $7}') # export local ip so docker can access it
-    ```
-
-
+   ```
+   export NIP=$(ip route get 1 | awk '{print $7}') # export local ip so docker can access it
+   ```
 
 3. **Construir a Imagem Docker**:
+
    ```
-    docker compose build 
-    ```
+    docker compose build
+   ```
 
 4. **Iniciar a Rede**:
 
-   * Usando Docker Compose:
+   - Usando Docker Compose:
 
-    ```
-     docker compose up -d nodeX # começar uma nova rede
-    ```
-
-
-
+   ```
+    docker compose up -d nodeX # começar uma nova rede
+   ```
 
 Isso iniciará um nó (`nodeX`) com portas configuradas para comunicação UDP e API TCP.
-
-   
 
 5\. **Adicionar um Nó a uma Rede Existente**:
 
@@ -95,7 +85,7 @@ HOST=ip_de_um_no_qualquer:porta_do_mesmo_no docker compose up -d nodeX # adicion
 
 ### Submeter uma Avaliação
 
-* **Via URL do GitHub**:
+- **Via URL do GitHub**:
 
   ```
     curl -X POST http\://\<OUTSIDE\_IP>:\<API\_PORT>/evaluation&#x20;
@@ -103,10 +93,7 @@ HOST=ip_de_um_no_qualquer:porta_do_mesmo_no docker compose up -d nodeX # adicion
     -d '{"urls": \["[https://github.com/user/repo](https://github.com/user/repo)"], "token": "\<GITHUB\_TOKEN>"}'
   ```
 
-
-
-
-- **Via Arquivo ZIP**:
+* **Via Arquivo ZIP**:
   ```bash
     curl -X POST http://<OUTSIDE_IP>:<API_PORT>/evaluation \
     -F "file=@/caminho/para/projeto.zip"
@@ -116,15 +103,13 @@ A resposta inclui um `eval_id` para rastrear a avaliação.
 
 ### Consultar Status de Avaliação
 
-* **Avaliação específica**:
+- **Avaliação específica**:
 
   ```bash
     curl http\://\<OUTSIDE\_IP>:\<API\_PORT>/evaluation/\<eval\_id>
   ```
 
-
-
-- **Listar todas as avaliações**:
+* **Listar todas as avaliações**:
   ```bash
     curl http://<OUTSIDE_IP>:<API_PORT>/evaluation
   ```
@@ -145,11 +130,11 @@ curl http://<OUTSIDE_IP>:<API_PORT>/network
 
 ### Componentes Principais
 
-* **Nó (`node.py`)**: Gerencia processamento de tarefas, comunicação, tolerância a falhas e interação com a API.
-* **API Flask (`api.py`)**: Interface web para submissão de projetos e consultas.
-* **Network (`Network.py`)**: Abstrai a comunicação UDP entre nós, gerenciando mensagens.
-* **PytestRunner (`test_runner.py`)**: Executa testes de módulos usando `pytest` e parseia resultados.
-* **Utils (`functions.py`, `module_finder.py`)**: Funções auxiliares para manipulação de arquivos e descoberta de módulos.
+- **Nó (`node.py`)**: Gerencia processamento de tarefas, comunicação, tolerância a falhas e interação com a API.
+- **API Flask (`api.py`)**: Interface web para submissão de projetos e consultas.
+- **Network (`Network.py`)**: Abstrai a comunicação UDP entre nós, gerenciando mensagens.
+- **PytestRunner (`test_runner.py`)**: Executa testes de módulos usando `pytest` e parseia resultados.
+- **Utils (`functions.py`, `module_finder.py`)**: Funções auxiliares para manipulação de arquivos e descoberta de módulos.
 
 ### Fluxo de Operação
 
@@ -159,8 +144,6 @@ curl http://<OUTSIDE_IP>:<API_PORT>/network
 4. **Execução de Testes**: Cada nó executa os módulos atribuídos e coleta resultados.
 5. **Tolerância a Falhas**: Heartbeats monitoram nós; falhas disparam redistribuição e eleição de recuperação.
 6. **Resultados**: Agregados e acessíveis via API.
-
-
 
 ## Tolerância a Falhas e Eleição de Recuperação
 
@@ -177,21 +160,15 @@ Cada nó envia periodicamente mensagens de heartbeat para os demais. Se um nó d
 
 Esse mecanismo garante que avaliações não sejam perdidas e que a rede continue operando mesmo em caso de falhas.
 
-
 ## Manutenção
 
-* **Limpar Imagens Docker Não Utilizadas**:
+- **Limpar Imagens Docker Não Utilizadas**:
 
   ```bash
    sudo docker images -f "dangling=true" -q | xargs -r sudo docker rmi
   ```
 
-
-
-- **Acessar Logs**:
+* **Acessar Logs**:
   ```bash
     docker logs <nome_do_container>
   ```
-
-
-
