@@ -168,7 +168,7 @@ class Node:
         stats_copy = self.network_cache["status"].copy()
         stats_copy[f"{self.outside_ip}:{self.outside_port}"] = {}
         stats_copy[f"{self.outside_ip}:{self.outside_port}"]["stats"] = self._get_status()
-        
+
         res["nodes"] = [
             {"addr": node, **data["stats"]} for node, data in stats_copy.items()
         ]
@@ -252,7 +252,7 @@ class Node:
             )
 
         await self._propagate_cache()
-        
+
         # retrive modules
         info = {
             "eval_id": eval_id,
@@ -345,7 +345,7 @@ class Node:
 
             for project_id in projects:
                 project_path = os.path.join(os.getcwd(), project_id)
-                
+
                 # get modules per project
                 modules = await test_runner.get_modules(project_path)
 
@@ -377,6 +377,7 @@ class Node:
             "id": eval_id,
             "start_time": eval_data["start_time"],
             "end_time": eval_data["end_time"],
+            "time_elapsed": "--",
             "summary": {
                 "pass_percentage": 0,
                 "fail_percentage": 0,
@@ -521,7 +522,7 @@ class Node:
                         # update task status
                         addr = self.task_results[task_id]["node"]
 
-                        # send task results via http on                    
+                        # send task results via http on
                         url = f"http://{addr[0]}:{addr[1]}/task"
                         info = {
                             "task_id": task_id,
@@ -532,13 +533,13 @@ class Node:
                             "module": module,
                             "ip": self.outside_ip,
                             "port": self.outside_port,
-                        } 
-                        
+                        }
+
                         await asyncio.get_event_loop().run_in_executor(
                             None,
                             partial(self.send_http_post, url, info)
                         )
-                        
+
                         del self.task_results[task_id]
                         logging.debug(f"Sent task result to {addr}")
 
@@ -551,6 +552,15 @@ class Node:
                             )
                             if all_finished and not e_data["end_time"]:
                                 e_data["end_time"] = time.time()
+
+                                # clear project files
+                                for p_id in e_data["projects"]:
+                                    if p_id in self.urls:
+                                        del self.urls [p_id]
+                                    else:
+                                        del self.project_files[p_id]
+                                    self._remove_directory(p_id)
+
 
                     await self._propagate_cache()
 
@@ -575,7 +585,7 @@ class Node:
 
         logging.debug("Node stopped processing queue")
         return
-        
+
     def send_http_post(self,url:str,info:dict):
         "sends a post request to the given url with the given info"
         try:
@@ -987,7 +997,10 @@ class Node:
             if self.network_cache["evaluations"][e_id]["end_time"] is not None:
                 # clean
                 for project_id in self.network_cache["evaluations"][e_id]["projects"]:
-
+                    if project_id in self.urls:
+                        del self.urls [project_id]
+                    if project_id in self.project_files:
+                        del self.project_files[project_id]
                     self._remove_directory(project_id)
 
         for p_id, p_data in projects.items():
@@ -995,7 +1008,7 @@ class Node:
                 self.network_cache["projects"][p_id] = {
                     "node": p_data["node"],
                     "modules": p_data["modules"],
-                    "project_name": p_data.get("project_name"),
+                    "project_name": p_data["project_name"],
                 }
             else:
                 #merge projects
@@ -1005,8 +1018,8 @@ class Node:
                         current_modules[module_name] = module_data
                     elif module_data["status"] == "running" and current_modules[module_name]["status"] == "pending":
                         current_modules[module_name]["status"] = "running"
-                    
-                
+
+
         logging.debug(f"Cache updated from {saddr}")
 
     async def _handle_task_confirm(self, message: dict, _addr: Tuple[str, int]):
@@ -1114,7 +1127,7 @@ class Node:
                     {"task_id": f"{project_id}::{module}"})
         except Exception:
             logging.error(f"Error handling task send: {traceback.format_exc()}")
-            
+
     async def _handle_task_result(self, task_id: str, info:Dict):
         """Process task result message from a worker node"""
         project_id = info["project_id"]
@@ -1128,7 +1141,7 @@ class Node:
         # Obter o nó responsável atual do cache
         responsible_node = None
         responsible_node_str = None
-        
+
         if project_id in self.network_cache["projects"]:
             responsible_node_str = self.network_cache["projects"][project_id].get("node")
             if responsible_node_str:
@@ -1168,13 +1181,13 @@ class Node:
             if responsible_node and not is_responsible:
                 if original_addr != responsible_node:
                     logging.info(f"Forwarding task result {task_id} to the new responsible node {responsible_node}")
-                
+
                     url = f"http://{responsible_node[0]}:{responsible_node[1]}/task"
                     await asyncio.get_event_loop().run_in_executor(
                         None,
                         partial(self.send_http_post, url, info)
                     )
-                
+
                 return  # Return early to avoid processing the result locally
 
             # Process the result if this node is still responsible or is the new responsible node

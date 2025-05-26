@@ -108,7 +108,6 @@ class FlaskInterface:
         def get_stats():
             # get node status
             status = self.node.get_status()
-            # TODO: add info about other nodes 
             return jsonify(status), 200
 
         @self.app.route("/file/<file_id>", methods=["GET"])
@@ -135,7 +134,6 @@ class FlaskInterface:
                 
                 # extract info
                 task_id = data.get('task_id')
-                #logging.debug(f"Received task result: {task_id}, {data}")
                 
                 if not task_id or not data:
                     return jsonify({"error": "Task ID and result are required"}), 400

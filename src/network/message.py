@@ -7,7 +7,6 @@ class MessageType(enum.Enum):
     HEARTBEAT = 1
     CONNECT = 2
     CONNECT_REP = 3
-
     TASK_ANNOUNCE = 4
     TASK_REQUEST = 5
     TASK_SEND = 6
