@@ -38,7 +38,6 @@ Distributed CD Tester é um sistema baseado em Python projetado para distribuir 
 
 ## Requisitos
 
-- **Python**: 3.13 ou superior
 - **Docker**: Para executar nós em contêineres
 - **Docker Compose**: Para orquestrar múltiplos nós
 - **Dependências Python**: Listadas em `requirements.txt` (instaladas automaticamente no Docker)
