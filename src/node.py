@@ -259,7 +259,7 @@ class Node:
         }
 
         logging.debug("retrieve tasks")
-        asyncio.create_task(self.retrieve_tasks(info, type=ZIP))
+        asyncio.create_task(self.retrieve_tasks(self.task_queue,info, type=ZIP))
 
         return eval_id
 
@@ -281,7 +281,7 @@ class Node:
         self._new_evaluation(eval_id)
 
         self.network_cache["evaluations"][eval_id]["start_time"] = time.time()
-        asyncio.create_task(self.retrieve_tasks({"eval_id": eval_id,
+        asyncio.create_task(self.retrieve_tasks(self.task_queue,{"eval_id": eval_id,
                                                 "urls": urls,
                                                 "token": token},
                                                 type=URL))
@@ -289,7 +289,7 @@ class Node:
         await self._propagate_cache()
         return eval_id
 
-    async def retrieve_tasks(self, info: Dict[str, Any], type: int = ZIP) -> None:
+    async def retrieve_tasks(self, queue:asyncio.Queue, info: Dict[str, Any], type: int = ZIP) -> None:
         """
         retrive tasks (pytest modules) from a project
         type 0: zip
@@ -299,6 +299,22 @@ class Node:
         eval_id = info["eval_id"]
         node_addr = f"{self.outside_ip}:{self.outside_port}"
         added = False # marks if any project was added
+
+        async def add_module(project_id,modules):
+            to_add = [module
+            for module in modules
+            if module not in self.network_cache["projects"][project_id]["modules"]
+                or self.network_cache["projects"][project_id]["modules"][module]["status"] in ["pending","running"]
+            ]
+
+            self.network_cache["projects"][project_id]["modules"] = {
+                module: {"passed": 0, "failed": 0, "time": 0, "status": "pending"}
+                for module in to_add
+            }
+
+            for module in to_add:
+                await queue.put((project_id, module))
+
 
         if type == URL:
             token = info["token"]
@@ -325,14 +341,7 @@ class Node:
 
                 if modules:
                     logging.debug(f"Modules: {modules}")
-                    self.network_cache["projects"][project_id]["modules"] = {
-                        module: {"passed": 0, "failed": 0, "time": 0, "status": "pending"}
-                        for module in modules
-                    }
-
-                    # add to task queue
-                    for module in modules:
-                        await self.task_queue.put((project_id, module))
+                    await add_module(project_id, modules)
 
             await asyncio.sleep(0.01)
 
@@ -349,14 +358,9 @@ class Node:
                 modules = await test_runner.get_modules(project_path)
 
                 if modules:
-                    self.network_cache["projects"][project_id]["modules"] = {
-                        module: {"passed": 0, "failed": 0, "time": 0, "status": "pending"}
-                        for module in modules
-                    }
                     added = True
                     # add to task queue
-                    for module in modules:
-                        await self.task_queue.put((project_id, module))
+                    await add_module(project_id,modules)
 
             await asyncio.sleep(0.01)
 
@@ -1396,31 +1400,26 @@ class Node:
 
             # Atualizar o cache para refletir que este nó agora é responsável
             for project_id in projects:
-                if project_id in self.network_cache["projects"]:
-                    # Atualizar o nó responsável no cache
-                    node_addr = f"{self.outside_ip}:{self.outside_port}"
-                    self.network_cache["projects"][project_id]["node"] = node_addr
+                #if project_id in self.network_cache["projects"]:
+                # Atualizar o nó responsável no cache
+                node_addr = f"{self.outside_ip}:{self.outside_port}"
+                self.network_cache["projects"][project_id]["node"] = node_addr
 
-                    # Anunciar mudança de responsabilidade
-                    self.network.EVALUATION_RESPONSIBILITY_UPDATE({ # type: ignore
-                        "project_id": project_id,
-                        "new_node": node_addr,
-                        "eval_id": eval_id
-                    })
+                # Anunciar mudança de responsabilidade
+                self.network.EVALUATION_RESPONSIBILITY_UPDATE({ # type: ignore
+                    "project_id": project_id,
+                    "new_node": node_addr,
+                    "eval_id": eval_id
+                })
 
-                    # Add pending/running modules to the task priority queue
-                    modules_added = 0
-                    for module_name, module_data in self.network_cache["projects"][project_id].get("modules", {}).items():
-                        if module_data.get("status") in ["pending", "running"]:
-                            # Reset status to pending to ensure it gets processed
-                            self.network_cache["projects"][project_id]["modules"][module_name]["status"] = "pending"
+                info = {
+                    "eval_id": eval_id,
+                    "project_ids": [project_id]
+                }
 
-                            # Add to priority queue
-                            await self.task_priority_queue.put((project_id, module_name))
-                            modules_added += 1
+                logging.debug("retrieve tasks")
+                asyncio.create_task(self.retrieve_tasks(self.task_priority_queue,info, type=ZIP))
 
-                    if modules_added > 0:
-                        logging.info(f"Added {modules_added} modules from project {project_id} to priority queue")
 
         # Propagar as alterações do cache
         await self._propagate_cache()
