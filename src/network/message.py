@@ -11,21 +11,10 @@ class MessageType(enum.Enum):
     TASK_ANNOUNCE = 4
     TASK_REQUEST = 5
     TASK_SEND = 6
-    TASK_WORKING = 7
-    TASK_RESULT = 8
-
     TASK_CONFIRM = 9
-    TASK_RESULT_REP = 10
-
     PROJECT_ANNOUNCE = 11
     RECOVERY_ELECTION = 12                 # Eleição para recuperação
     EVALUATION_RESPONSIBILITY_UPDATE = 13  # Atualização de responsabilidade por Evaluation
-
-
-
-
-
-
 
 
 class Message:

@@ -204,42 +204,6 @@ class Network:
         )
         self.protocol.send(mssg.to_dict(), addr)
 
-    def TASK_RESULT(self, addr:tuple, result:dict) -> None:
-        """
-        send the result of a task to the requester
-        """
-        mssg = Message(
-            MessageType.TASK_RESULT,
-            result,
-            os.environ.get("OUTSIDE_IP"),       #type: ignore
-            int(os.environ.get("OUTSIDE_PORT")) #type: ignore
-        )
-        self.protocol.send(mssg.to_dict(), addr)
-    
-    def TASK_WORKING(self, addr:tuple, info:dict) -> None:
-        """
-        send a message to the requester that the task is being worked on
-        """
-        mssg = Message(
-            MessageType.TASK_WORKING,
-            info,
-            os.environ.get("OUTSIDE_IP"),       #type: ignore
-            int(os.environ.get("OUTSIDE_PORT")) #type: ignore
-        )
-        self.protocol.send(mssg.to_dict(), addr)
-
-    def TASK_RESULT_REP(self, addr:tuple, result:dict) -> None:
-        """
-        send the result of a task to the requester
-        """
-        mssg = Message(
-            MessageType.TASK_RESULT_REP,
-            result,
-            os.environ.get("OUTSIDE_IP"),       #type: ignore
-            int(os.environ.get("OUTSIDE_PORT")) #type: ignore
-        )
-        self.protocol.send(mssg.to_dict(), addr)
-
     def CACHE_UPDATE(self, cache:Dict)->None:
         """
         send cache to all peers

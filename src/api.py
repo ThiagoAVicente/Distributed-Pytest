@@ -111,14 +111,50 @@ class FlaskInterface:
             # TODO: add info about other nodes 
             return jsonify(status), 200
 
-        @self.app.route("/file/<task_id>", methods=["GET"])
-        def get_file(task_id):
-            file = self.node.get_file(task_id)
+        @self.app.route("/file/<file_id>", methods=["GET"])
+        def get_file(file_id):
+            file = self.node.get_file(file_id)
 
             if not file:
                 return jsonify({"error": "File not found"}), 404
 
             return jsonify(file), 200
+            
+        @self.app.route("/task", methods=["POST"])
+        def submit_task_result():
+            """receive task result from anothere node via http post using json"""
+            import traceback
+            # ensure content type is application/json
+            if request.content_type != 'application/json':
+                return jsonify({"error": "Invalid content type"}), 400
+            
+            try:
+                data = request.get_json()
+                if not data:
+                    return jsonify({"error": "Invalid JSON data"}), 400
+                
+                # extract info
+                task_id = data.get('task_id')
+                #logging.debug(f"Received task result: {task_id}, {data}")
+                
+                if not task_id or not data:
+                    return jsonify({"error": "Task ID and result are required"}), 400
+                
+                # process the task result
+                future = asyncio.run_coroutine_threadsafe(
+                    self.node._handle_task_result(task_id, data),
+                    self.event_loop
+                )
+                success = future.result()
+                
+                if not success:
+                    return jsonify({"error": "Failed to process task result"}), 500
+                
+                return jsonify({"status": "success"}), 200
+            except Exception as e:
+                logging.error(f"Error processing task result: {traceback.format_exc()}")
+                return jsonify({"error": str(e)}), 500
+
 
         @self.app.route("/network", methods=["GET"])
         def get_network():
