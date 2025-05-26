@@ -1271,7 +1271,7 @@ class Node:
         ip = message.get("ip", None)
         port = message.get("port", None)
         addr = (ip, port)
-        node_id =f"{ip}:{port}"
+        node_id =message["data"]["id"]
         self.last_heartbeat_received[node_id] = time.time()
         self.network.add_peer(node_id,addr) # type: ignore
         logging.debug(f"Heartbeat received from {ip}:{port}")
@@ -1281,14 +1281,19 @@ class Node:
         while self.is_running:
             current_time = time.time()
             for node_id, last_time in list(self.last_heartbeat_received.items()):
-                if current_time - last_time > 3 * HEARTBEAT_INTERVAL:
+                if current_time - last_time > 3 * self.response_timeout:
+                    
+                    addr = self.network.peers[node_id] #type: ignore
+                    addr_str = f"{addr[0]}:{addr[1]}"
+                    
                     logging.warning(f"Node {node_id} is considered failed.")
                     await self.handle_node_failure(node_id)
                     del self.last_heartbeat_received[node_id]  # Remove o nó falho
                     self.network.remove_peer(node_id) # type: ignore
-                    logging.debug("---------------------------"+node_id +"cache: "+str(self.network_cache["status"]))
-                    if node_id in self.network_cache["status"]:
-                        del self.network_cache["status"][node_id]
+                    
+                    if addr_str in self.network_cache["status"]:
+                        del self.network_cache["status"][addr_str]
+                        
             await asyncio.sleep(HEARTBEAT_INTERVAL)
 
     async def handle_node_failure(self, node_id: str):
