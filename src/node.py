@@ -23,7 +23,7 @@ IP:str = "0.0.0.0"
 URL:int = 1
 ZIP:int = 0
 
-HEARTBEAT_INTERVAL:float = 5
+HEARTBEAT_INTERVAL:float = 7
 UPDATE_INTERVAL:float = 5
 TASK_ANNOUNCE_INTERVAL:float = 5
 
@@ -65,6 +65,7 @@ class Node:
         self.last_heartbeat:float = .0
         self.last_task_announce:float = .0
         self.last_update:float = .0
+        self.last_clean_up:float = .0
 
         # stats
         self.tests_passed:int = 0
@@ -72,7 +73,6 @@ class Node:
         self.modules:int = 0
 
         self.evaluation_counter:int = 0
-        # results
 
         # network cache
         self.network_cache:Dict[str, Dict[str,Any]] = {
@@ -552,15 +552,6 @@ class Node:
                             if all_finished and not e_data["end_time"]:
                                 e_data["end_time"] = time.time()
 
-                                # clear project files
-                                for p_id in e_data["projects"]:
-                                    if p_id in self.urls:
-                                        del self.urls [p_id]
-                                    else:
-                                        del self.project_files[p_id]
-                                    self._remove_directory(p_id)
-
-
                     await self._propagate_cache()
 
 
@@ -596,7 +587,7 @@ class Node:
                 logging.error(f"Error sending post request: {response.status_code}")
                 return None
         except Exception as e:
-            logging.error(f"Error sending post request: {e}")
+            logging.error(f"Error sending post request.")
             return None
 
     async def download_project(self, url: str, token: str , eval_id: str) -> Optional[Tuple[str, str]]:
@@ -791,6 +782,8 @@ class Node:
 
         if not self.connected:
             await self.connect()
+            self.last_heartbeat = time.time()
+            self.last_clean_up = time.time()
 
         # start listening for messages
         logging.debug("Node started listening for messages")
@@ -808,13 +801,16 @@ class Node:
                     # Put in priority queue for faster termination
                     await self.add_to_priority_queue(task_id)
 
+            if current_time - self.last_clean_up > 20:
+                await self._make_clean()
+
             # heartbeat
             if current_time - self.last_heartbeat > HEARTBEAT_INTERVAL:
                 try:
                     self.last_heartbeat = current_time
                     self.network.HEARTBEAT({
-                        "id": self.network.node_id, # type: ignore",
-                        "peers_ip": self.network.get_peers_ip(), # type: ignore
+                        "id": self.network.node_id, # type: ignore"
+                        "peers": self.network.get_peers()
                     })
                     logging.debug("Sent heartbeat")
                 except Exception as e:
@@ -923,6 +919,19 @@ class Node:
         elif cmd == MessageType.EVALUATION_RESPONSIBILITY_UPDATE.name:
             await self._handle_evaluation_responsibility_update(message, addr)
 
+    async def _make_clean(self):
+        """remove all project files from evaluations that were already processed"""
+
+        for e_id in self.network_cache["evaluations"].keys():
+            if self.network_cache["evaluations"][e_id]["end_time"] is not None:
+                # clean
+                for project_id in self.network_cache["evaluations"][e_id]["projects"]:
+                    if project_id in self.urls:
+                        del self.urls [project_id]
+                    if project_id in self.project_files:
+                        del self.project_files[project_id]
+                    self._remove_directory(project_id)
+
     # handlers
     async def _handle_task_request(self, message: dict, _addr: Tuple[str, int]):
         ip = message.get("ip", None)
@@ -992,15 +1001,6 @@ class Node:
                     current["start_time"] = e_data["start_time"]
                 if current["end_time"] is None:
                     current["end_time"] = e_data["end_time"]
-
-            if self.network_cache["evaluations"][e_id]["end_time"] is not None:
-                # clean
-                for project_id in self.network_cache["evaluations"][e_id]["projects"]:
-                    if project_id in self.urls:
-                        del self.urls [project_id]
-                    if project_id in self.project_files:
-                        del self.project_files[project_id]
-                    self._remove_directory(project_id)
 
         for p_id, p_data in projects.items():
             if p_id not in self.network_cache["projects"]:
@@ -1272,8 +1272,13 @@ class Node:
         port = message.get("port", None)
         addr = (ip, port)
         node_id =message["data"]["id"]
+        peers = message["data"]["peers"]
+
         self.last_heartbeat_received[node_id] = time.time()
+
         self.network.add_peer(node_id,addr) # type: ignore
+        self.network.merge_peers(peers)     # type: igore
+
         logging.debug(f"Heartbeat received from {ip}:{port}")
 
     async def check_heartbeats(self):
@@ -1281,19 +1286,19 @@ class Node:
         while self.is_running:
             current_time = time.time()
             for node_id, last_time in list(self.last_heartbeat_received.items()):
-                if current_time - last_time > 3 * self.response_timeout:
-                    
+                if current_time - last_time > 3 * HEARTBEAT_INTERVAL:
+
                     addr = self.network.peers[node_id] #type: ignore
                     addr_str = f"{addr[0]}:{addr[1]}"
-                    
+
                     logging.warning(f"Node {node_id} is considered failed.")
                     await self.handle_node_failure(node_id)
                     del self.last_heartbeat_received[node_id]  # Remove o nó falho
                     self.network.remove_peer(node_id) # type: ignore
-                    
+
                     if addr_str in self.network_cache["status"]:
                         del self.network_cache["status"][addr_str]
-                        
+
             await asyncio.sleep(HEARTBEAT_INTERVAL)
 
     async def handle_node_failure(self, node_id: str):
@@ -1481,7 +1486,7 @@ class Node:
 
         # Novo timeout: média + 2 vezes o desvio padrão, com limites
         new_timeout = avg_time + 2 * std_dev
-        self.response_timeout = max(3.0, min(10.0, new_timeout))
+        self.response_timeout = max(5.0, min(10.0, new_timeout))
 
         self.last_timeout_update = time.time()
         logging.debug(f"Updated response_timeout to {self.response_timeout:.2f} seconds")

@@ -138,16 +138,41 @@ class Network:
 
             await asyncio.sleep(1)
 
+    def merge_peers(self,p:Dict):
+
+        # create sets to avoid duplicates
+        s = set(self.peers.keys())
+        s = s.union(set(p.keys()))
+        new_peers = {}
+
+        for node_id in s:
+
+            # skip this node entry
+            if node_id == self.node_id:
+                continue
+
+            if node_id in self.peers:
+                new_peers[node_id] = tuple(self.peers[node_id])
+            else:
+                new_peers[node_id] = tuple(p[node_id])
+
+        self.peers = new_peers
+
     def get_peers_ip(self) -> list[str]:
         """
         returns the list of peers ip addresses and port on format "ip:port"
         """
         return [f"{peer[0]}:{peer[1]}" for peer in self.peers.values()]
 
+    def get_peers(self) -> Dict:
+        """return a copy of the peers dictionary"""
+        return self.peers.copy()
+
     async def recv(self) -> tuple[Dict,tuple[str,int]]:
         return await self.protocol.recv()
 
     def HEARTBEAT(self,data:dict) -> None:
+
         mssg = Message(
         MessageType.HEARTBEAT,
         data,
