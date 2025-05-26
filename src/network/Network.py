@@ -126,9 +126,9 @@ class Network:
                     data, _ = response
                     if data.get("cmd") == MessageType.CONNECT_REP.name:
                         # update the peers list
-                        self.peers = {node_id: tuple(addr) for node_id, addr in data["data"]["peers"].items() if tuple(addr) != self.node_addr}
+                        self.peers = {node_id: tuple(addr) for node_id, addr in data["data"]["peers"].items() if addr[0] != self.node_addr[0 and addr[1] != self.node_addr[1]]}
                         addr = (data["ip"], int(data["port"]))
-                        self.peers[data["data"]["id"]] = addr
+                        self.add_peer(data["data"]["id"], addr)
                         self.node_id = data["data"]["given_id"]
                         logging.info(f"Connected to {addr} with peers {self.peers}")
                         break

@@ -215,7 +215,6 @@ class Node:
         if eval_id:
             self.processed_evaluations.add(eval_id)
 
-    #TOCHECK
     async def submit_evaluation(self, zip_bytes:bytes) -> Optional[str]:
 
         # get evaluation id
@@ -1272,7 +1271,7 @@ class Node:
         ip = message.get("ip", None)
         port = message.get("port", None)
         addr = (ip, port)
-        node_id = message.get("data", {}).get("id", f"{addr[0]}:{addr[1]}")
+        node_id =f"{ip}:{port}"
         self.last_heartbeat_received[node_id] = time.time()
         self.network.add_peer(node_id,addr) # type: ignore
         logging.debug(f"Heartbeat received from {ip}:{port}")
@@ -1287,6 +1286,7 @@ class Node:
                     await self.handle_node_failure(node_id)
                     del self.last_heartbeat_received[node_id]  # Remove o nó falho
                     self.network.remove_peer(node_id) # type: ignore
+                    logging.debug("---------------------------"+node_id +"cache: "+str(self.network_cache["status"]))
                     if node_id in self.network_cache["status"]:
                         del self.network_cache["status"][node_id]
             await asyncio.sleep(HEARTBEAT_INTERVAL)
@@ -1476,7 +1476,7 @@ class Node:
 
         # Novo timeout: média + 2 vezes o desvio padrão, com limites
         new_timeout = avg_time + 2 * std_dev
-        self.response_timeout = max(5.0, min(10.0, new_timeout))
+        self.response_timeout = max(3.0, min(10.0, new_timeout))
 
         self.last_timeout_update = time.time()
         logging.debug(f"Updated response_timeout to {self.response_timeout:.2f} seconds")
