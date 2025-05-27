@@ -19,7 +19,7 @@ Esta pasta contém os módulos responsáveis pela comunicação entre os nós da
 - **protocol.py**  
   Implementa o protocolo de transporte assíncrono sobre UDP.
   - Classe `CDProto`: métodos utilitários para serializar e desserializar mensagens com cabeçalho de tamanho fixo.
-  - Classe `AsyncProtocol`: baseada em `asyncio.DatagramProtocol`, gerencia o envio e recebimento de mensagens UDP de forma não bloqueante.
+  - Classe `AsyncProtocol`: extende `asyncio.DatagramProtocol`, gerencia o envio e recebimento de mensagens UDP de forma não bloqueante.
   - Permite que cada nó envie e receba mensagens de/para múltiplos peers simultaneamente.
 
 - **\_\_init\_\_.py**  
