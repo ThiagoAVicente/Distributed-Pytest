@@ -7,6 +7,30 @@ import io
 import zipfile
 import urllib.request
 from typing import Optional, Dict, List
+import requests
+import re
+
+def remove_directory( path: str):
+    """Remove a directory and all its contents"""
+    import shutil
+    shutil.rmtree(path, ignore_errors=True)
+    
+def download_zip(url):
+    response = requests.get(url, stream=True)
+    if response.status_code == 200:
+        content_disp = response.headers.get('Content-Disposition', '')
+        match = re.search(r'filename="?([^"]+)"?', content_disp)
+        filename = match.group(1) if match else 'downloaded_file.zip'
+        with open(filename, "wb") as f:
+            for chunk in response.iter_content(chunk_size=8192):
+                f.write(chunk)
+        return filename
+    else:
+        return None
+        
+def extract_zip_to_current_dir(zip_path):
+    with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+        zip_ref.extractall("./")
 
 async def download_github_repo(url: str, token: str, target_dir_name:str) -> Optional[str]:
     " download a github repository"
@@ -165,41 +189,3 @@ def folder2zip(path:str)-> str:
     except Exception as e:
         logging.error(f"Error creating zip file: {e}")
         return None
-
-def file2bytes(path:str)-> bytes:
-    "converts a file to bytes"
-    try:
-        with open(path, 'rb') as f:
-            return f.read()
-    except Exception as e:
-        logging.error(f"Error reading file: {e}")
-        return None
-
-async def folder_2_bytes(path: str) -> bytes:
-    loop = asyncio.get_running_loop()
-    # folder2zip
-    zip_path = await loop.run_in_executor(None, folder2zip, path)
-    if not zip_path:
-        return None
-    # file2bytes
-    file_bytes = await loop.run_in_executor(None, file2bytes, zip_path)
-
-    # remove zip file
-    os.unlink(zip_path)
-    return file_bytes
-
-async def bytes_2_folder(zip_bytes: bytes) -> List[str]:
-    """Extracts folders from zip bytes to current directory and returns folder names."""
-    zip_stream = io.BytesIO(zip_bytes)
-    folder_names = set()
-
-    with zipfile.ZipFile(zip_stream) as zf:
-        for member in zf.namelist():
-            # Get top-level folder
-            parts = member.split('/')
-            if len(parts) > 1:
-                folder_names.add(parts[0])
-        
-        zf.extractall("./")
-
-    return list(folder_names)

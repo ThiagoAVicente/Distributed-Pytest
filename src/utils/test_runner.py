@@ -58,6 +58,20 @@ class PytestRunner:
         new_modules = current_modules - self._original_modules
         for mod in new_modules:
             sys.modules.pop(mod, None)
+            
+    def count_test_functions_in_file(self,file_path):
+        import ast
+        count = 0
+        try:
+            with open(file_path, "r", encoding="utf-8") as f:
+                tree = ast.parse(f.read(), filename=file_path)
+                for node in ast.walk(tree):
+                    if isinstance(node, ast.FunctionDef) and node.name.startswith("test_"):
+                        count += 1
+        except Exception:
+            pass
+        return count
+
     
     async def run_tests(self,  project_name: str, module: str) -> Optional["TestResult"]:
         project_root = os.path.join(self.work_dir,  project_name)
@@ -89,7 +103,8 @@ class PytestRunner:
                 if proc.returncode != 0:
                     logging.error(f"Failed to install requirements:\n{stderr.decode()}")
                     return None
-
+            
+            await asyncio.sleep(0.01)
             # prepare command
             pytest_cmd = [
                 "pytest",
@@ -118,8 +133,13 @@ class PytestRunner:
                 except asyncio.TimeoutError:
                     logging.error("Process could not be terminated properly")
                 
+                loop = asyncio.get_running_loop()
+                num_tests = await loop.run_in_executor(None, self.count_test_functions_in_file, module_path)
+
                 # Return a result that indicates timeout
-                return TestResult(0, 1, 1, PYTESTMAXTIME) 
+                return TestResult(0, num_tests, num_tests, PYTESTMAXTIME) 
+                
+            await asyncio.sleep(0.01)
 
             if proc.returncode >= 2:
                 logging.error(f"Pytest internal errors:\n{stderr.decode()}")
