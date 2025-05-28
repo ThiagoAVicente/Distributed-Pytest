@@ -91,6 +91,7 @@ class Node:
         # Election tracking
         self.active_elections: Dict[str, Dict[str, float]] = {}  # failed_node_id -> {candidate_id: timestamp}
         self.failed_nodes: Dict[str,str] = {}
+        self.election_data:Dict[str,Dict[str, List[str]]] = {}
 
     async def start(self):
         "starts the node"
@@ -105,11 +106,25 @@ class Node:
         tasks = [
             asyncio.create_task(self.check_heartbeats()),
             asyncio.create_task(self.listen()),
-            asyncio.create_task(self.process_queue())
+            asyncio.create_task(self.process_queue()),
+            asyncio.create_task(self.preriodic_heartbeats(HEARTBEAT_INTERVAL/2))
         ]
         await asyncio.gather(*tasks)
 
         logging.info(f"Node started at {self.outside_ip}:{self.outside_port}")
+
+    async def preriodic_heartbeats(self, interval:float = HEARTBEAT_INTERVAL):
+        "sends periodic heartbeats to the network"
+        while self.is_running:
+            try:
+                self.heartbeat()
+                logging.debug("Sent periodic heartbeat")
+                await asyncio.sleep(interval)
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logging.error(f"Error in periodic heartbeat: {e}")
+                await asyncio.sleep(1)
 
     async def stop(self):
         "stops the node"
@@ -289,6 +304,7 @@ class Node:
                 set(self.network_cache["evaluations"][eval_id]["projects"]) | {project_id}
             )
 
+        await self._propagate_cache()
         await self.retrieve_tasks(self.task_queue, project_ids)
         await self._propagate_cache()
 
@@ -331,10 +347,12 @@ class Node:
 
             await asyncio.sleep(0.01)
 
+        # propagate cache
+        await self._propagate_cache()
+
         # get all tasks from projects
         await self.retrieve_tasks(self.task_queue, project_ids)
 
-        # propagate cache
         await self._propagate_cache()
 
     async def retrieve_tasks(self, queue:asyncio.Queue, projects:List[str])-> None:
@@ -460,6 +478,13 @@ class Node:
         "returns all evaluations"
         return list(self.network_cache["evaluations"].keys())
 
+    def heartbeat(self):
+        self.last_heartbeat = time.time()
+        self.network.HEARTBEAT({
+            "id": self.network.node_id, # type: ignore"
+            "peers": self.network.get_peers()
+        })
+
     async def process_queue(self):
         " process task queue"
 
@@ -483,9 +508,13 @@ class Node:
                     project_id, module = await asyncio.wait_for(self.task_priority_queue.get(), timeout=1)
                     logging.info(f"Processing high priority task {project_id}::{module}")
 
-                else:
+                elif not self.task_queue.empty():
                     project_id, module = await asyncio.wait_for(self.task_queue.get(), timeout=1)
                     self.network_cache["projects"][project_id]["modules"][module]["status"] = "running"
+
+                else:
+                    await asyncio.sleep(0.1)
+                    continue
 
                 self.is_working = True
                 await self._propagate_cache()
@@ -682,7 +711,7 @@ class Node:
 
             for project_id in self.network_cache["evaluations"][eval_id]["projects"]:
                 # check if the project was already processed by going though the modules status
-                for module_data in self.network_cache["projects"][project_id].get("modules", {}).values():
+                for module_data in self.network_cache["projects"][project_id]["modules"].values():
                     if module_data.get("status") in ["pending", "running"]:
                         found_projects.add(project_id)
                         break
@@ -728,23 +757,12 @@ class Node:
             if current_time - self.last_clean_up > 20:
                 await self._make_clean()
 
-            # heartbeat
-            if current_time - self.last_heartbeat >= HEARTBEAT_INTERVAL/2:
-                try:
-                    self.last_heartbeat = current_time
-                    self.network.HEARTBEAT({
-                        "id": self.network.node_id, # type: ignore"
-                        "peers": self.network.get_peers()
-                    })
-                    logging.debug("Sent heartbeat")
-                except Exception as e:
-                    logging.error(f"Error in heartbeat: {e}")
-
             if current_time - self.last_update > UPDATE_INTERVAL:
                 await self._propagate_cache()
 
             # anounce task
-            if not self.task_queue.empty() and current_time - self.last_task_announce > TASK_ANNOUNCE_INTERVAL:
+            has_task:bool = not (self.task_queue.empty() and self.task_priority_queue.empty() )
+            if  has_task and current_time - self.last_task_announce > TASK_ANNOUNCE_INTERVAL:
                 self.network.TASK_ANNOUNCE()
                 self.last_task_announce = current_time
                 logging.debug("Sent task announce")
@@ -804,7 +822,6 @@ class Node:
             if len(self.response_times[addr]) > 10:  # Limitar a 10 tempos recentes
                 self.response_times[addr].pop(0)
 
-
         if cmd == MessageType.TASK_ANNOUNCE.name:
             # process project announce
             logging.debug(f"Task announce from {addr}")
@@ -844,6 +861,9 @@ class Node:
         elif cmd == MessageType.EVALUATION_RESPONSIBILITY_UPDATE.name:
             await self._handle_evaluation_responsibility_update(message, addr)
 
+        elif cmd == MessageType.RECOVERY_ELECTION_REP.name:
+            await self._handle_recovery_election_rep(message)
+
     async def _make_clean(self):
         """remove all project files from evaluations that were already processed"""
 
@@ -856,6 +876,16 @@ class Node:
                     f.remove_directory(project_id)
 
     # handlers
+
+    async def _handle_recovery_election_rep(self,message):
+
+        data = message["data"] # contains the evaluatiopns: projects
+        for eval_id, projects in data.items():
+            if eval_id not in self.election_data:
+                self.election_data[eval_id] = {"projects": projects, "nodes": []}
+            else:
+                self.election_data[eval_id]["projects"].extend(projects)
+
     async def _handle_task_request(self, message: dict, addr: Tuple[str, int]):
         send = False
         project_id = ""
@@ -1114,7 +1144,7 @@ class Node:
 
     async def _handle_project_announce(self, message: dict, addr: Tuple[str, int]):
 
-        logging.debug(f"Received project announce")
+        logging.debug("Received project announce")
 
         project_id = message["data"]["project_id"]
 
@@ -1146,12 +1176,12 @@ class Node:
         while self.is_running:
             current_time = time.time()
             for node_id, last_time in list(self.last_heartbeat_received.items()):
-                if current_time - last_time > 3.5 * HEARTBEAT_INTERVAL:
-                    
+                if current_time - last_time > 5 * HEARTBEAT_INTERVAL:
+
                     del self.last_heartbeat_received[node_id]  # Remove o nó falho
                     if node_id not in self.network.peers:  # type: ignore
                         continue
-                    
+
                     addr = self.network.peers[node_id]   #type: ignore
                     addr_str = f"{addr[0]}:{addr[1]}"
 
@@ -1173,19 +1203,28 @@ class Node:
 
         logging.warning(f"Starting recovery process for failed node {node_id}")
 
-        # 1. Verificar se há avaliações ativas no nó falho
+        await self.reassign(node_id)
+
+        # check if there is a need to do a election
         active_evaluations = self.get_active_evaluations_for_node(node_id)
 
         if active_evaluations:
             # 2. Participar da eleição para recuperação
-            recovery_node = await self._elect_recovery_node(node_id, active_evaluations)
+            recovery_node, evaluations = await self._elect_recovery_node(node_id)
 
             if recovery_node == self.network.node_id: # type: ignore
                 # Este nó foi eleito para recuperação
                 logging.info(f"This node has been elected to retrieve node ratings {node_id}")
-                await self._become_recovery_node(node_id, active_evaluations)
+                await self._become_recovery_node(node_id, evaluations)
 
+            else:
+                addr = self.network.peers.get(recovery_node) # type: ignore
+                if addr:
+                    logging.info(f"Node {recovery_node} has been elected to retrieve node ratings {node_id}")
+                    # Enviar dados de avaliações ativas para o nó eleito
+                    self.network.RECOVERY_ELECTION_REP(addr, evaluations)
 
+    async def reassign(self,node_id:str):
         # 3. Redistribuir tarefas
         tasks_to_reassign = [task_id for task_id, info in self.task_responsibilities.items()
                             if f"{info[0][0]}:{info[0][1]}" == node_id]
@@ -1206,7 +1245,7 @@ class Node:
             return False
 
     # Replace the existing _elect_recovery_node method with this implementation:
-    async def _elect_recovery_node(self, failed_node_id: str, active_evaluations: Dict[str, List[str]]) -> str:
+    async def _elect_recovery_node(self, failed_node_id: str):
         """
         Processo de eleição para determinar qual nó assumirá a responsabilidade
         de receber resultados do nó falho.
@@ -1216,16 +1255,18 @@ class Node:
         # Initialize election tracking for this failed node
         if failed_node_id not in self.active_elections:
             self.active_elections[failed_node_id] = {}
-            self.
 
         # Add this node as a candidate
         self.active_elections[failed_node_id][self.network.node_id] = time.time() # type: ignore
+        self.election_data[failed_node_id]=self.get_active_evaluations_for_node(failed_node_id)
 
         # Announce candidacy
         election_data = {
             "candidate_id": self.network.node_id,# type: ignore
             "failed_node": failed_node_id,
-            "timestamp": time.time()
+            "timestamp": time.time(),
+            "extra":self.election_data[failed_node_id], # add info to merge after,
+            "failed_node_addr": self.failed_nodes.get(failed_node_id, None)
         }
 
         self.network.RECOVERY_ELECTION(election_data) # type: ignore
@@ -1233,7 +1274,7 @@ class Node:
         # Wait for candidates to be collected through the message handler
         election_timeout = time.time() + 2 * self.response_timeout  # 2 seconds to collect candidates
         while time.time() < election_timeout:
-            await asyncio.sleep(0.1)
+            await asyncio.sleep(0.01)
 
         # Determine the winner (node with lowest ID)
         candidates = self.active_elections.get(failed_node_id, {})
@@ -1249,7 +1290,7 @@ class Node:
         # Clean up election data
         del self.active_elections[failed_node_id]
 
-        return winner
+        return winner, self.election_data[failed_node_id]
 
     async def _become_recovery_node(self, failed_node_id: str, active_evaluations: Dict[str, List[str]]):
         """
@@ -1273,7 +1314,6 @@ class Node:
                     "new_node": node_addr,
                     "eval_id": eval_id
                 })
-
 
         asyncio.create_task(self.retrieve_tasks(self.task_priority_queue,projects))
 
@@ -1314,6 +1354,7 @@ class Node:
         failed_node_id = data.get("failed_node")
         candidate_id = data.get("candidate_id")
         timestamp = data.get("timestamp", time.time())
+        failed_node_addr = data.get("failed_node_addr", None)
 
         if not failed_node_id or not candidate_id:
             logging.error(f"Invalid election message: {message}")
@@ -1324,6 +1365,21 @@ class Node:
             self.active_elections[failed_node_id] = {}
 
         self.active_elections[failed_node_id][candidate_id] = timestamp
+
+        self.failed_nodes[failed_node_id] = failed_node_addr
+
+        election_data_temp = message["data"]["extra"]  # get active evaluations
+        evaluations = self.get_active_evaluations_for_node(failed_node_id)
+        for eval_id, projects in election_data_temp.items():
+            if eval_id not in evaluations:
+                evaluations[eval_id] = projects
+            else:
+                evaluations[eval_id].extend(projects)
+
+
+        self.network.RECOVERY_ELECTION_REP(addr,evaluations)
+
+        await self.reassign(failed_node_id)
         logging.debug(f"Received election candidate {candidate_id} for failed node {failed_node_id}")
 
     async def update_response_timeout(self):

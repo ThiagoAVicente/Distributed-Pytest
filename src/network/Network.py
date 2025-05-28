@@ -270,7 +270,32 @@ class Network:
             int(os.environ.get("OUTSIDE_PORT")) #type: ignore
         )
         self.__send_to_all(mssg)
+        
+    def RECOVERY_ELECTION_REP(self, addr, data:Dict)-> None:
+        """
+        Responde a uma eleição de recuperação
+        """
+        mssg = Message(
+            MessageType.RECOVERY_ELECTION_REP,
+            data,
+            os.environ.get("OUTSIDE_IP"),       #type: ignore
+            int(os.environ.get("OUTSIDE_PORT")) #type: ignore
+        )
+        
+        # send to node
+        self.protocol.send(mssg.to_dict(), addr)
 
+    def RECOVERY_ELECTION_RESULT(self, data:Dict)->None:
+        """
+        Anuncia o resultado da eleição de recuperação
+        """
+        mssg = Message(
+            MessageType.RECOVERY_ELECTION_RESULT,
+            data,
+            os.environ.get("OUTSIDE_IP"),       #type: ignore
+            int(os.environ.get("OUTSIDE_PORT")) #type: ignore
+        )
+        self.__send_to_all(mssg)
 
     def EVALUATION_RESPONSIBILITY_UPDATE(self, data:Dict)->None:
         """

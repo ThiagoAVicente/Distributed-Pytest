@@ -13,8 +13,9 @@ class MessageType(enum.Enum):
     TASK_CONFIRM = 9
     PROJECT_ANNOUNCE = 11
     RECOVERY_ELECTION = 12                 # Eleição para recuperação
+    RECOVERY_ELECTION_REP = 14    
     EVALUATION_RESPONSIBILITY_UPDATE = 13  # Atualização de responsabilidade por Evaluation
-
+    RECOVERY_ELECTION_RESULT = 15         # Resultado da eleição de recuperação
 
 class Message:
     def __init__(self, msg_type: MessageType, data: dict, ip:str, port:int):
