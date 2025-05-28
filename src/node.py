@@ -7,7 +7,6 @@ import logging
 import zipfile
 import os
 import traceback
-import base64
 import time
 from functools import partial
 from typing import List, Dict, Any, Optional, Set, Tuple
@@ -90,6 +89,7 @@ class Node:
 
         # Election tracking
         self.active_elections: Dict[str, Dict[str, float]] = {}  # failed_node_id -> {candidate_id: timestamp}
+        self.failed_nodes: Set[str] = set()
 
     async def start(self):
         "starts the node"
@@ -1192,16 +1192,16 @@ class Node:
         peers = message["data"]["peers"]
 
         self.last_heartbeat_received[node_id] = time.time()
+        
+        if node_id in self.failed_nodes:
+            self.failed_nodes.remove(node_id)
+            logging.info(f"Node {node_id} has recovered and is back online")
 
         self.network.add_peer(node_id,addr) # type: ignore
-        self.network.merge_peers(peers)     # type: ignore
         
-        # Atualiza o cache de status com o endereço do nó
-        for peer_id in self.network.get_peers().keys():
-            if not peer_id in self.last_heartbeat_received :
-                self.last_heartbeat_received[peer_id] = time.time()
-
-
+        excluded_nodes = set(self.active_elections.keys()).union(self.failed_nodes)
+        self.network.merge_peers(peers, excluded_nodes) # type: ignore
+        
         logging.debug(f"Heartbeat received from {addr[0]}:{addr[1]}")
 
     async def check_heartbeats(self):
@@ -1215,8 +1215,10 @@ class Node:
                     addr_str = f"{addr[0]}:{addr[1]}"
 
                     logging.warning(f"Node {node_id} is considered failed.")
-                    self.network.remove_peer(node_id) # type: ignore
                     del self.last_heartbeat_received[node_id]  # Remove o nó falho
+                    self.network.remove_peer(node_id) # type: ignore
+                    
+                    self.failed_nodes.add(node_id) # add new failed node
                     await self.handle_node_failure(node_id)
 
                     if addr_str in self.network_cache["status"]:
@@ -1332,7 +1334,7 @@ class Node:
                 })
 
 
-            asyncio.create_task(self.retrieve_tasks(self.task_priority_queue,projects))
+        asyncio.create_task(self.retrieve_tasks(self.task_priority_queue,projects))
 
         # Propagar as alterações do cache
         await self._propagate_cache()

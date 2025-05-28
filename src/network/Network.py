@@ -1,7 +1,7 @@
 import asyncio
 from network.message import Message, MessageType
 from network.protocol import AsyncProtocol
-from typing import Dict
+from typing import Dict, Set
 import logging
 import time
 import random
@@ -140,17 +140,19 @@ class Network:
 
             await asyncio.sleep(1)
 
-    def merge_peers(self,p:Dict):
+    def merge_peers(self,p:Dict, excluded:Set[str] ):
 
         # create sets to avoid duplicates
         s = set(self.peers.keys())
         s = s.union(set(p.keys()))
         new_peers = {}
+        
+        logging.warning(f"Merging peers: {s} with excluded: {excluded}")
 
         for node_id in s:
 
             # skip this node entry
-            if node_id == self.node_id:
+            if node_id == self.node_id or node_id in excluded:
                 continue
 
             if node_id in self.peers:
