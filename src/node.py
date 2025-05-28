@@ -72,6 +72,7 @@ class Node:
         self.modules:int = 0
 
         self.evaluation_counter:int = 0
+        self.submitted_evaluations:Set = set()  # set of evaluation ids that were submitted
 
         # network cache
         self.network_cache:Dict[str, Dict[str,Any]] = {
@@ -89,7 +90,7 @@ class Node:
 
         # Election tracking
         self.active_elections: Dict[str, Dict[str, float]] = {}  # failed_node_id -> {candidate_id: timestamp}
-        self.failed_nodes: Set[str] = set()
+        self.failed_nodes: Dict[str,str] = {}
 
     async def start(self):
         "starts the node"
@@ -127,7 +128,8 @@ class Node:
             "passed": self.tests_passed,
             "projects": len(self.processed_projects),
             "modules": self.modules,
-            "evaluations": list(self.processed_evaluations)
+            "evaluations": list(self.processed_evaluations),
+            "submitted_evaluation":list(self.submitted_evaluations)
         }
         return res
 
@@ -182,6 +184,7 @@ class Node:
 
     def _new_evaluation(self,eval_id:str):
         "creates a new evaluation entry"
+        self.submitted_evaluations.add(eval_id)
         self.network_cache["evaluations"][eval_id] = {
             "projects": [],
             "start_time": time.time(),
@@ -662,96 +665,30 @@ class Node:
 
         logging.info(f"Looking for active evaluations for node {node_id}")
 
-        # Check if we have node_id in status cache to get its address
-        node_addr = None
-        if node_id in self.network_cache["status"]:
-            node_addr = self.network_cache["status"][node_id].get("addr")
-            logging.info(f"Found address {node_addr} for node {node_id} in cache")
-
         # If we still don't have an address but have peers, try to find it there
-        if not node_addr and hasattr(self.network, 'peers') and node_id in self.network.peers: # type: ignore
-            peer_addr = self.network.peers[node_id] # type: ignore
-            node_addr = f"{peer_addr[0]}:{peer_addr[1]}"
-            logging.info(f"Found address {node_addr} for node {node_id} in peers")
+        node_addr = self.failed_nodes[node_id]
+        logging.info(f"Found address {node_addr} for node {node_id} in peers")
 
-        # Start by collecting all evaluations that are not completed
-        # (where end_time is None)
-        active_eval_ids = []
-        for eval_id, eval_data in self.network_cache["evaluations"].items():
-            if eval_data.get("end_time") is None:
-                active_eval_ids.append(eval_id)
-                logging.info(f"Found active evaluation: {eval_id}")
+        eval_ids = self.network_cache["status"][node_addr]["stats"]["submitted_evaluation"]
+        found_projects = set()
 
-        logging.info(f"Total active evaluations found: {len(active_eval_ids)}")
+        for eval_id in eval_ids:
+            # reset found projects for each evaluation
+            found_projects.clear()
 
-        # For each active evaluation, find its projects
-        for eval_id in active_eval_ids:
-            eval_data = self.network_cache["evaluations"][eval_id]
-            eval_projects = []
+            if eval_id not in self.network_cache["evaluations"]:
+                logging.warning(f"Evaluation {eval_id} not found in cache")
+                continue
 
-            for project_id in eval_data.get("projects", []):
-                if project_id in self.network_cache["projects"]:
-                    project_data = self.network_cache["projects"][project_id]
-                    project_node = project_data.get("node", "")
+            for project_id in self.network_cache["evaluations"][eval_id]["projects"]:
+                # check if the project was already processed by going though the modules status
+                for module_data in self.network_cache["projects"][project_id].get("modules", {}).values():
+                    if module_data.get("status") in ["pending", "running"]:
+                        found_projects.add(project_id)
+                        break
 
-                    # Check if this project belongs to the failed node
-                    belongs_to_node = False
+            active_evaluations[eval_id] = list(found_projects)
 
-                    # Try different matching strategies
-                    if project_node == node_id or (node_addr and project_node == node_addr):
-                        belongs_to_node = True
-
-                    if belongs_to_node:
-                        # Check if there are pending or running modules
-                        has_active_modules = False
-                        for module_data in project_data.get("modules", {}).values():
-                            if module_data.get("status") in ["pending", "running"]:
-                                has_active_modules = True
-                                break
-
-                        if has_active_modules:
-                            eval_projects.append(project_id)
-                            logging.info(f"Project {project_id} belongs to node {node_id} and has active modules")
-
-            # If we found projects for this evaluation, add it to the result
-            if eval_projects:
-                active_evaluations[eval_id] = eval_projects
-
-        # Add any current evaluations from node status
-        if node_id in self.network_cache["status"]:
-            node_stats = self.network_cache["status"][node_id].get("stats", {})
-            node_evaluations = node_stats.get("evaluations", [])
-
-            if node_evaluations:
-                logging.info(f"Node {node_id} has evaluations in its stats: {node_evaluations}")
-
-                # For each evaluation the node was working on
-                for eval_id in node_evaluations:
-                    if eval_id not in active_evaluations and eval_id in self.network_cache["evaluations"]:
-                        eval_data = self.network_cache["evaluations"][eval_id]
-
-                        # Check if evaluation is still active
-                        if eval_data.get("end_time") is None:
-                            # Find any projects with active modules
-                            eval_projects = []
-
-                            for project_id in eval_data.get("projects", []):
-                                if project_id in self.network_cache["projects"]:
-                                    project_data = self.network_cache["projects"][project_id]
-
-                                    # Check if there are pending or running modules
-                                    has_active_modules = False
-                                    for module_data in project_data.get("modules", {}).values():
-                                        if module_data.get("status") in ["pending", "running"]:
-                                            has_active_modules = True
-                                            break
-
-                                    if has_active_modules:
-                                        eval_projects.append(project_id)
-
-                            if eval_projects:
-                                active_evaluations[eval_id] = eval_projects
-                                logging.info(f"Added evaluation {eval_id} from node stats with projects {eval_projects}")
 
         if active_evaluations:
             logging.info(f"Found active evaluations for node {node_id}: {active_evaluations}")
@@ -1192,16 +1129,16 @@ class Node:
         peers = message["data"]["peers"]
 
         self.last_heartbeat_received[node_id] = time.time()
-        
+
         if node_id in self.failed_nodes:
-            self.failed_nodes.remove(node_id)
+            del self.failed_nodes[node_id]
             logging.info(f"Node {node_id} has recovered and is back online")
 
         self.network.add_peer(node_id,addr) # type: ignore
-        
-        excluded_nodes = set(self.active_elections.keys()).union(self.failed_nodes)
+
+        excluded_nodes = set(self.active_elections.keys()).union(set(self.failed_nodes.keys()))
         self.network.merge_peers(peers, excluded_nodes) # type: ignore
-        
+
         logging.debug(f"Heartbeat received from {addr[0]}:{addr[1]}")
 
     async def check_heartbeats(self):
@@ -1217,8 +1154,8 @@ class Node:
                     logging.warning(f"Node {node_id} is considered failed.")
                     del self.last_heartbeat_received[node_id]  # Remove o nó falho
                     self.network.remove_peer(node_id) # type: ignore
-                    
-                    self.failed_nodes.add(node_id) # add new failed node
+
+                    self.failed_nodes[node_id] = addr_str # add new failed node
                     await self.handle_node_failure(node_id)
 
                     if addr_str in self.network_cache["status"]:

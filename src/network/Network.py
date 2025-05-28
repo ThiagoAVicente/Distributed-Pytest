@@ -147,7 +147,7 @@ class Network:
         s = s.union(set(p.keys()))
         new_peers = {}
         
-        logging.warning(f"Merging peers: {s} with excluded: {excluded}")
+        #logging.warning(f"Merging peers: {s} with excluded: {excluded}")
 
         for node_id in s:
 
