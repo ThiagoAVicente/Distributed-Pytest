@@ -1147,12 +1147,15 @@ class Node:
             current_time = time.time()
             for node_id, last_time in list(self.last_heartbeat_received.items()):
                 if current_time - last_time > 3.5 * HEARTBEAT_INTERVAL:
-
-                    addr = self.network.peers[node_id] #type: ignore
+                    
+                    del self.last_heartbeat_received[node_id]  # Remove o nó falho
+                    if node_id not in self.network.peers:  # type: ignore
+                        continue
+                    
+                    addr = self.network.peers[node_id]   #type: ignore
                     addr_str = f"{addr[0]}:{addr[1]}"
 
                     logging.warning(f"Node {node_id} is considered failed.")
-                    del self.last_heartbeat_received[node_id]  # Remove o nó falho
                     self.network.remove_peer(node_id) # type: ignore
 
                     self.failed_nodes[node_id] = addr_str # add new failed node
@@ -1213,6 +1216,7 @@ class Node:
         # Initialize election tracking for this failed node
         if failed_node_id not in self.active_elections:
             self.active_elections[failed_node_id] = {}
+            self.
 
         # Add this node as a candidate
         self.active_elections[failed_node_id][self.network.node_id] = time.time() # type: ignore
