@@ -1184,6 +1184,7 @@ class Node:
 
                     addr = self.network.peers[node_id]   #type: ignore
                     addr_str = f"{addr[0]}:{addr[1]}"
+                    await self.reassign(addr_str)
 
                     logging.warning(f"Node {node_id} is considered failed.")
                     self.network.remove_peer(node_id) # type: ignore
@@ -1202,8 +1203,6 @@ class Node:
         Redistribuindo tarefas do nó falho"""
 
         logging.warning(f"Starting recovery process for failed node {node_id}")
-
-        await self.reassign(node_id)
 
         # check if there is a need to do a election
         active_evaluations = self.get_active_evaluations_for_node(node_id)
@@ -1224,14 +1223,17 @@ class Node:
                     # Enviar dados de avaliações ativas para o nó eleito
                     self.network.RECOVERY_ELECTION_REP(addr, evaluations)
 
-    async def reassign(self,node_id:str):
+    async def reassign(self,node_saddr:str):
+
+
         # 3. Redistribuir tarefas
         tasks_to_reassign = [task_id for task_id, info in self.task_responsibilities.items()
-                            if f"{info[0][0]}:{info[0][1]}" == node_id]
+                            if f"{info[0][0]}:{info[0][1]}" == node_saddr]
         for task_id in tasks_to_reassign:
             await self.add_to_priority_queue(task_id)
             del self.task_responsibilities[task_id]
-            logging.info(f"Reassigned task {task_id} from failed node {node_id}")
+            logging.info(f"Reassigned task {task_id} from failed node {node_saddr}")
+
 
     async def add_to_priority_queue(self, task_id: str):
         """Adiciona uma tarefa à fila de prioridade, extraindo project_id e module do task_id"""
@@ -1379,7 +1381,7 @@ class Node:
 
         self.network.RECOVERY_ELECTION_REP(addr,evaluations)
 
-        await self.reassign(failed_node_id)
+        await self.reassign(f"{failed_node_addr[0]}:{failed_node_addr[1]}")
         logging.debug(f"Received election candidate {candidate_id} for failed node {failed_node_id}")
 
     async def update_response_timeout(self):
