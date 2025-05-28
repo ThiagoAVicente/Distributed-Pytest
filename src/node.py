@@ -1215,9 +1215,9 @@ class Node:
                     addr_str = f"{addr[0]}:{addr[1]}"
 
                     logging.warning(f"Node {node_id} is considered failed.")
-                    await self.handle_node_failure(node_id)
-                    del self.last_heartbeat_received[node_id]  # Remove o nó falho
                     self.network.remove_peer(node_id) # type: ignore
+                    del self.last_heartbeat_received[node_id]  # Remove o nó falho
+                    await self.handle_node_failure(node_id)
 
                     if addr_str in self.network_cache["status"]:
                         del self.network_cache["status"][addr_str]
