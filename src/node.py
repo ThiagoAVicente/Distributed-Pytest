@@ -1197,7 +1197,7 @@ class Node:
         self.network.merge_peers(peers)     # type: ignore
         
         # Atualiza o cache de status com o endereço do nó
-        for  peer_id in peers.keys():
+        for peer_id in self.network.get_peers().keys():
             if not peer_id in self.last_heartbeat_received :
                 self.last_heartbeat_received[peer_id] = time.time()
 
