@@ -1195,6 +1195,12 @@ class Node:
 
         self.network.add_peer(node_id,addr) # type: ignore
         self.network.merge_peers(peers)     # type: ignore
+        
+        # Atualiza o cache de status com o endereço do nó
+        for  peer_id in peers.keys():
+            if not peer_id in self.last_heartbeat_received :
+                self.last_heartbeat_received[peer_id] = time.time()
+
 
         logging.debug(f"Heartbeat received from {addr[0]}:{addr[1]}")
 
@@ -1327,7 +1333,6 @@ class Node:
 
 
             asyncio.create_task(self.retrieve_tasks(self.task_priority_queue,projects))
-
 
         # Propagar as alterações do cache
         await self._propagate_cache()
