@@ -67,7 +67,7 @@ class Network:
             logging.info(f"Removed peer {id} from the list of peers")
 
 
-    def CONNECT_REP(self,addr:tuple[str,int]) ->None:
+    def CONNECT_REP(self,addr:tuple[str,int]) ->str:
         """
         send a connect response to the discovery server
         """
@@ -100,6 +100,8 @@ class Network:
 
         self.peers[new_id] = addr
         self.protocol.send(mssg.to_dict(), addr)
+
+        return new_id
 
     async def connect(self,haddr:tuple):
         """

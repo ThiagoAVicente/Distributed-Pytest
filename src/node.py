@@ -101,9 +101,12 @@ class Node:
         self.is_running = True
 
         # start node tasks
-        asyncio.create_task(self.check_heartbeats())
-        asyncio.create_task(self.listen())
-        asyncio.create_task(self.process_queue())
+        tasks = [
+            asyncio.create_task(self.check_heartbeats()),
+            asyncio.create_task(self.listen()),
+            asyncio.create_task(self.process_queue())
+        ]
+        await asyncio.gather(*tasks)
 
         logging.info(f"Node started at {self.outside_ip}:{self.outside_port}")
 
@@ -789,7 +792,7 @@ class Node:
                 await self._make_clean()
 
             # heartbeat
-            if current_time - self.last_heartbeat > HEARTBEAT_INTERVAL:
+            if current_time - self.last_heartbeat >= HEARTBEAT_INTERVAL/2:
                 try:
                     self.last_heartbeat = current_time
                     self.network.HEARTBEAT({
@@ -882,7 +885,8 @@ class Node:
 
         elif cmd == MessageType.CONNECT.name:
             logging.info(f"Received connect request from {addr}")
-            self.network.CONNECT_REP(addr) # type: ignore
+            id = self.network.CONNECT_REP(addr) # type: ignore
+            self.last_heartbeat_received[id] = time.time()
 
         elif cmd == MessageType.HEARTBEAT.name:
             await self._handle_heartbeat(message, addr)
@@ -1199,7 +1203,7 @@ class Node:
         while self.is_running:
             current_time = time.time()
             for node_id, last_time in list(self.last_heartbeat_received.items()):
-                if current_time - last_time > 3 * HEARTBEAT_INTERVAL:
+                if current_time - last_time > 3.5 * HEARTBEAT_INTERVAL:
 
                     addr = self.network.peers[node_id] #type: ignore
                     addr_str = f"{addr[0]}:{addr[1]}"
@@ -1321,13 +1325,8 @@ class Node:
                     "eval_id": eval_id
                 })
 
-                info = {
-                    "eval_id": eval_id,
-                    "project_ids": [project_id]
-                }
 
-                logging.debug("retrieve tasks")
-                asyncio.create_task(self.retrieve_tasks(self.task_priority_queue,info, type=ZIP))
+            asyncio.create_task(self.retrieve_tasks(self.task_priority_queue,projects))
 
 
         # Propagar as alterações do cache
