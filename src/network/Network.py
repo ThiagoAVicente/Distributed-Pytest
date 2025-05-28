@@ -285,7 +285,7 @@ class Network:
         # send to node
         self.protocol.send(mssg.to_dict(), addr)
 
-    def RECOVERY_ELECTION_RESULT(self, data:Dict)->None:
+    def RECOVERY_ELECTION_RESULT(self,addr, data:Dict)->None:
         """
         Anuncia o resultado da eleição de recuperação
         """
@@ -295,7 +295,7 @@ class Network:
             os.environ.get("OUTSIDE_IP"),       #type: ignore
             int(os.environ.get("OUTSIDE_PORT")) #type: ignore
         )
-        self.__send_to_all(mssg)
+        self.protocol.send(mssg.to_dict(), addr)
 
     def EVALUATION_RESPONSIBILITY_UPDATE(self, data:Dict)->None:
         """

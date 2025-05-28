@@ -3,10 +3,9 @@ import asyncio
 import tempfile
 import logging
 import shutil
-import io
 import zipfile
 import urllib.request
-from typing import Optional, Dict, List
+from typing import Optional, Dict
 import requests
 import re
 

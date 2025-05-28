@@ -89,7 +89,7 @@ class Node:
         self.last_timeout_update: float = time.time()               # Última atualização do timeout
 
         # Election tracking
-        self.active_elections: Dict[str, Dict[str, float]] = {}  # failed_node_id -> {candidate_id: timestamp}
+        self.active_elections: Dict[str, List[str]] = {}  # failed_node_id -> {candidate_id: timestamp}
         self.failed_nodes: Dict[str,str] = {}
         self.election_data:Dict[str,Dict[str, List[str]]] = {}
 
@@ -863,6 +863,9 @@ class Node:
 
         elif cmd == MessageType.RECOVERY_ELECTION_REP.name:
             await self._handle_recovery_election_rep(message)
+            
+        elif cmd == MessageType.RECOVERY_ELECTION_RESULT.name:
+            await self._handle_recovery_election_result(message)
 
     async def _make_clean(self):
         """remove all project files from evaluations that were already processed"""
@@ -876,10 +879,28 @@ class Node:
                     f.remove_directory(project_id)
 
     # handlers
+    async def _handle_recovery_election_result(self,message):
+        """
+        Handles the result of a recovery election.
+        Updates the election data with the winning node's projects.
+        """
+        data = message["data"]
+        evaluations = data["evaluations"]
+        failed_node_id = data["failed_node_id"]
+        
+        await self._become_recovery_node(failed_node_id, evaluations)
 
     async def _handle_recovery_election_rep(self,message):
 
         data = message["data"] # contains the evaluatiopns: projects
+        node_id = message["node_id"]
+        failed_node_id = message["failed_node_id"]
+        
+        if failed_node_id not in self.active_elections:
+            return
+        
+        self.active_elections[failed_node_id].append(node_id)
+        
         for eval_id, projects in data.items():
             if eval_id not in self.election_data:
                 self.election_data[eval_id] = {"projects": projects, "nodes": []}
@@ -1221,7 +1242,8 @@ class Node:
                 if addr:
                     logging.info(f"Node {recovery_node} has been elected to retrieve node ratings {node_id}")
                     # Enviar dados de avaliações ativas para o nó eleito
-                    self.network.RECOVERY_ELECTION_REP(addr, evaluations)
+                    data = {"evaluations": evaluations,"failed_node_id":node_id} 
+                    self.network.RECOVERY_ELECTION_RESULT(addr, data)
 
     async def reassign(self,node_saddr:str):
 
@@ -1233,7 +1255,6 @@ class Node:
             await self.add_to_priority_queue(task_id)
             del self.task_responsibilities[task_id]
             logging.info(f"Reassigned task {task_id} from failed node {node_saddr}")
-
 
     async def add_to_priority_queue(self, task_id: str):
         """Adiciona uma tarefa à fila de prioridade, extraindo project_id e module do task_id"""
@@ -1256,10 +1277,10 @@ class Node:
         """
         # Initialize election tracking for this failed node
         if failed_node_id not in self.active_elections:
-            self.active_elections[failed_node_id] = {}
+            self.active_elections[failed_node_id] = []
 
         # Add this node as a candidate
-        self.active_elections[failed_node_id][self.network.node_id] = time.time() # type: ignore
+        self.active_elections[failed_node_id] = [self.network.node_id] # type: ignore
         self.election_data[failed_node_id]=self.get_active_evaluations_for_node(failed_node_id)
 
         # Announce candidacy
@@ -1279,18 +1300,14 @@ class Node:
             await asyncio.sleep(0.01)
 
         # Determine the winner (node with lowest ID)
-        candidates = self.active_elections.get(failed_node_id, {})
-
-        if not candidates:
-            logging.warning(f"No candidates found for failed node {failed_node_id}, assuming self as winner")
-            return self.network.node_id # type: ignore
-
-        winner = min(candidates.keys())
-
-        logging.info(f"Election for node recovery {failed_node_id}: winner is {winner}")
+        candidates = self.active_elections[failed_node_id]
 
         # Clean up election data
         del self.active_elections[failed_node_id]
+
+        winner = min(candidates)
+
+        logging.info(f"Election for node recovery {failed_node_id}: winner is {winner}")
 
         return winner, self.election_data[failed_node_id]
 
@@ -1300,16 +1317,16 @@ class Node:
         Assume a responsabilidade pelas avaliações do nó falho.
         """
         # Registrar no log quais avaliações estão sendo recuperadas
+        projects_id = []
         for eval_id, projects in active_evaluations.items():
             logging.info(f"Taking responsibility for assessment {eval_id} with {len(projects)} projects")
 
             # Atualizar o cache para refletir que este nó agora é responsável
             for project_id in projects:
-                #if project_id in self.network_cache["projects"]:
                 # Atualizar o nó responsável no cache
                 node_addr = f"{self.outside_ip}:{self.outside_port}"
                 self.network_cache["projects"][project_id]["node"] = node_addr
-
+                projects_id.append(project_id)
                 # Anunciar mudança de responsabilidade
                 self.network.EVALUATION_RESPONSIBILITY_UPDATE({ # type: ignore
                     "project_id": project_id,
@@ -1317,7 +1334,7 @@ class Node:
                     "eval_id": eval_id
                 })
 
-        asyncio.create_task(self.retrieve_tasks(self.task_priority_queue,projects))
+        asyncio.create_task(self.retrieve_tasks(self.task_priority_queue,projects_id))
 
         # Propagar as alterações do cache
         await self._propagate_cache()
@@ -1370,6 +1387,11 @@ class Node:
 
         self.failed_nodes[failed_node_id] = failed_node_addr
 
+        if failed_node_id in self.network.peers: # type: ignore
+            logging.warning(f"Node {failed_node_id} is considered failed.")
+            self.network.remove_peer(failed_node_id) # type: ignore
+        
+
         election_data_temp = message["data"]["extra"]  # get active evaluations
         evaluations = self.get_active_evaluations_for_node(failed_node_id)
         for eval_id, projects in election_data_temp.items():
@@ -1377,9 +1399,15 @@ class Node:
                 evaluations[eval_id] = projects
             else:
                 evaluations[eval_id].extend(projects)
+                
+        if failed_node_addr in self.network_cache["status"]:
+            del self.network_cache["status"][failed_node_addr]
 
-
-        self.network.RECOVERY_ELECTION_REP(addr,evaluations)
+        to_send = {
+            "failed_node_id": failed_node_id,
+            "evaluations": evaluations,
+        }
+        self.network.RECOVERY_ELECTION_REP(addr,to_send)
 
         await self.reassign(f"{failed_node_addr[0]}:{failed_node_addr[1]}")
         logging.debug(f"Received election candidate {candidate_id} for failed node {failed_node_id}")
