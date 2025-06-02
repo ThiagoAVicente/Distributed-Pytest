@@ -863,7 +863,7 @@ class Node:
 
         elif cmd == MessageType.RECOVERY_ELECTION_REP.name:
             await self._handle_recovery_election_rep(message)
-            
+
         elif cmd == MessageType.RECOVERY_ELECTION_RESULT.name:
             await self._handle_recovery_election_result(message)
 
@@ -887,7 +887,7 @@ class Node:
         data = message["data"]
         evaluations = data["evaluations"]
         failed_node_id = data["failed_node_id"]
-        
+
         await self._become_recovery_node(failed_node_id, evaluations)
 
     async def _handle_recovery_election_rep(self,message):
@@ -895,12 +895,12 @@ class Node:
         data = message["data"] # contains the evaluatiopns: projects
         node_id = message["node_id"]
         failed_node_id = message["failed_node_id"]
-        
+
         if failed_node_id not in self.active_elections:
             return
-        
+
         self.active_elections[failed_node_id].append(node_id)
-        
+
         for eval_id, projects in data.items():
             if eval_id not in self.election_data:
                 self.election_data[eval_id] = {"projects": projects, "nodes": []}
@@ -1242,7 +1242,7 @@ class Node:
                 if addr:
                     logging.info(f"Node {recovery_node} has been elected to retrieve node ratings {node_id}")
                     # Enviar dados de avaliações ativas para o nó eleito
-                    data = {"evaluations": evaluations,"failed_node_id":node_id} 
+                    data = {"evaluations": evaluations,"failed_node_id":node_id}
                     self.network.RECOVERY_ELECTION_RESULT(addr, data)
 
     async def reassign(self,node_saddr:str):
@@ -1390,7 +1390,7 @@ class Node:
         if failed_node_id in self.network.peers: # type: ignore
             logging.warning(f"Node {failed_node_id} is considered failed.")
             self.network.remove_peer(failed_node_id) # type: ignore
-        
+
 
         election_data_temp = message["data"]["extra"]  # get active evaluations
         evaluations = self.get_active_evaluations_for_node(failed_node_id)
@@ -1399,13 +1399,14 @@ class Node:
                 evaluations[eval_id] = projects
             else:
                 evaluations[eval_id].extend(projects)
-                
+
         if failed_node_addr in self.network_cache["status"]:
             del self.network_cache["status"][failed_node_addr]
 
         to_send = {
             "failed_node_id": failed_node_id,
             "evaluations": evaluations,
+            "node_id": self.network.node_id,  # type: ignore
         }
         self.network.RECOVERY_ELECTION_REP(addr,to_send)
 
