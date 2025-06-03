@@ -893,8 +893,8 @@ class Node:
     async def _handle_recovery_election_rep(self,message):
 
         data = message["data"] # contains the evaluatiopns: projects
-        node_id = message["node_id"]
-        failed_node_id = message["failed_node_id"]
+        node_id = data["node_id"]
+        failed_node_id = data["failed_node_id"]
 
         if failed_node_id not in self.active_elections:
             return
