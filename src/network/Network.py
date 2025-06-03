@@ -5,7 +5,6 @@ from typing import Dict, Set
 import logging
 import time
 import random
-import os
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -94,10 +93,7 @@ class Network:
         mssg = Message(
             MessageType.CONNECT_REP,
             {"peers": self.peers.copy(), "id": self.node_id, "given_id": new_id},
-            os.environ.get("OUTSIDE_IP"),       #type: ignore
-            int(os.environ.get("OUTSIDE_PORT")) #type: ignore
         )
-
         self.peers[new_id] = addr
         self.protocol.send(mssg.to_dict(), addr)
 
@@ -115,8 +111,6 @@ class Network:
             mssg = Message(
                 MessageType.CONNECT,
                 {},
-                os.environ.get("OUTSIDE_IP"),       #type: ignore
-                int(os.environ.get("OUTSIDE_PORT")) #type: ignore
             )
             self.protocol.send(mssg.to_dict(), haddr )
 
@@ -180,8 +174,6 @@ class Network:
         mssg = Message(
         MessageType.HEARTBEAT,
         data,
-        os.environ.get("OUTSIDE_IP"),       #type: ignore
-        int(os.environ.get("OUTSIDE_PORT")) #type: ignore
         )
         self.__send_to_all(mssg)
 
@@ -192,8 +184,6 @@ class Network:
         mssg = Message(
             MessageType.TASK_ANNOUNCE,
             {"id":self.node_id},
-            os.environ.get("OUTSIDE_IP"),       #type: ignore
-            int(os.environ.get("OUTSIDE_PORT")) #type: ignore
         )
         self.__send_to_all(mssg)
 
@@ -204,8 +194,6 @@ class Network:
         mssg = Message(
             MessageType.TASK_REQUEST,
             {"id":self.node_id},
-            os.environ.get("OUTSIDE_IP"),       #type: ignore
-            int(os.environ.get("OUTSIDE_PORT")) #type: ignore
         )
         self.protocol.send(mssg.to_dict(), addr)
 
@@ -216,8 +204,6 @@ class Network:
         mssg = Message(
             MessageType.TASK_SEND,
             {"id":self.node_id, "info": info},
-            os.environ.get("OUTSIDE_IP"),       #type: ignore
-            int(os.environ.get("OUTSIDE_PORT")) #type: ignore
         )
         self.protocol.send(mssg.to_dict(), addr)
 
@@ -228,8 +214,6 @@ class Network:
         mssg = Message(
             MessageType.TASK_CONFIRM,
             content,
-            os.environ.get("OUTSIDE_IP"),       #type: ignore
-            int(os.environ.get("OUTSIDE_PORT")) #type: ignore
         )
         self.protocol.send(mssg.to_dict(), addr)
 
@@ -240,8 +224,6 @@ class Network:
         mssg = Message(
             MessageType.CACHE_UPDATE,
             cache,
-            os.environ.get("OUTSIDE_IP"),       #type: ignore
-            int(os.environ.get("OUTSIDE_PORT")) #type: ignore
         )
         self.__send_to_all(mssg)
 
@@ -252,8 +234,6 @@ class Network:
         mssg = Message(
             MessageType.PROJECT_ANNOUNCE,
             info,
-            os.environ.get("OUTSIDE_IP"),       #type: ignore
-            int(os.environ.get("OUTSIDE_PORT")) #type: ignore
         )
         self.__send_to_all(mssg)
 
@@ -266,8 +246,6 @@ class Network:
         mssg = Message(
             MessageType.RECOVERY_ELECTION,
             data,
-            os.environ.get("OUTSIDE_IP"),       #type: ignore
-            int(os.environ.get("OUTSIDE_PORT")) #type: ignore
         )
         self.__send_to_all(mssg)
         
@@ -278,8 +256,6 @@ class Network:
         mssg = Message(
             MessageType.RECOVERY_ELECTION_REP,
             data,
-            os.environ.get("OUTSIDE_IP"),       #type: ignore
-            int(os.environ.get("OUTSIDE_PORT")) #type: ignore
         )
         
         # send to node
@@ -292,8 +268,6 @@ class Network:
         mssg = Message(
             MessageType.RECOVERY_ELECTION_RESULT,
             data,
-            os.environ.get("OUTSIDE_IP"),       #type: ignore
-            int(os.environ.get("OUTSIDE_PORT")) #type: ignore
         )
         self.protocol.send(mssg.to_dict(), addr)
 
@@ -304,8 +278,6 @@ class Network:
         mssg = Message(
             MessageType.EVALUATION_RESPONSIBILITY_UPDATE,
             data,
-            os.environ.get("OUTSIDE_IP"),       #type: ignore
-            int(os.environ.get("OUTSIDE_PORT")) #type: ignore
         )
         self.__send_to_all(mssg)
 

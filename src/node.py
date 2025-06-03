@@ -103,13 +103,14 @@ class Node:
         self.is_running = True
 
         # start node tasks
-        tasks = [
+        self.running_tasks = [
             asyncio.create_task(self.check_heartbeats()),
             asyncio.create_task(self.listen()),
             asyncio.create_task(self.process_queue()),
             asyncio.create_task(self.preriodic_heartbeats(HEARTBEAT_INTERVAL/2))
         ]
-        await asyncio.gather(*tasks)
+
+        asyncio.gather(*self.running_tasks)
 
         logging.info(f"Node started at {self.outside_ip}:{self.outside_port}")
 
@@ -129,6 +130,11 @@ class Node:
     async def stop(self):
         "stops the node"
         self.is_running = False
+
+        # stop all node tasks
+        for task in self.running_tasks:
+            if not task.done():
+                task.cancel()
 
         # stop network
         if self.network:

@@ -23,11 +23,6 @@ async def main():
     await node.stop()
 
 if __name__ == "__main__":
-
-
-    # create and initialize the node
-    
-    # get node address from env variable
     host_ = os.environ.get("HOST",0)
     
     node = Node(
