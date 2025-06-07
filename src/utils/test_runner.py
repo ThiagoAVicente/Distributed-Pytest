@@ -49,16 +49,16 @@ class PytestRunner:
         self.env = env
         self._original_modules = set()
         self._snapshot_modules()
-        
+
     def _snapshot_modules(self):
-        self._original_modules = set(sys.modules.keys())    
-    
+        self._original_modules = set(sys.modules.keys())
+
     def _restore_modules(self):
         current_modules = set(sys.modules.keys())
         new_modules = current_modules - self._original_modules
         for mod in new_modules:
             sys.modules.pop(mod, None)
-            
+
     def count_test_functions_in_file(self,file_path):
         import ast
         count = 0
@@ -72,7 +72,7 @@ class PytestRunner:
             pass
         return count
 
-    
+
     async def run_tests(self,  project_name: str, module: str) -> Optional["TestResult"]:
         project_root = os.path.join(self.work_dir,  project_name)
         test_path = os.path.join(project_root, "tests")
@@ -103,7 +103,7 @@ class PytestRunner:
                 if proc.returncode != 0:
                     logging.error(f"Failed to install requirements:\n{stderr.decode()}")
                     return None
-            
+
             await asyncio.sleep(0.01)
             # prepare command
             pytest_cmd = [
@@ -132,20 +132,20 @@ class PytestRunner:
                     await asyncio.wait_for(proc.wait(), timeout=5.0)
                 except asyncio.TimeoutError:
                     logging.error("Process could not be terminated properly")
-                
+
                 loop = asyncio.get_running_loop()
                 num_tests = await loop.run_in_executor(None, self.count_test_functions_in_file, module_path)
 
                 # Return a result that indicates timeout
-                return TestResult(0, num_tests, num_tests, PYTESTMAXTIME) 
-                
+                return TestResult(0, num_tests, num_tests, PYTESTMAXTIME)
+
             await asyncio.sleep(0.01)
 
             if proc.returncode >= 2:
                 logging.error(f"Pytest internal errors:\n{stderr.decode()}")
                 return None
             elif proc.returncode == 1:
-                logging.warning(f"Some tests failed:\n{stderr.decode()}")
+                logging.warning("Some tests failed")
 
             if not os.path.exists(xml_output):
                 logging.error("JUnit XML file was not created")
@@ -162,7 +162,7 @@ class PytestRunner:
             try:
                 self._restore_modules()
 
-                # clean 
+                # clean
                 if os.path.exists(xml_output):
                     os.remove(xml_output)
 
@@ -177,7 +177,7 @@ class PytestRunner:
 
             except Exception as e:
                 logging.warning(f"Error during cleanup: {e}")
-                    
+
     async def parse_results(self, xml_path: str) -> TestResult:
         "read results from xml"
         try:
@@ -225,8 +225,8 @@ class PytestRunner:
         """get all pytest modules in the given path using a separate process"""
         try:
             finder_path = os.path.join(os.path.dirname(__file__), "module_finder.py")
-            
-            
+
+
             # run script
             prco = await asyncio.create_subprocess_exec(
                 "python", finder_path, project_name,
@@ -235,20 +235,20 @@ class PytestRunner:
                 cwd=self.work_dir,
                 env=self.env
             )
-            
+
             stdout, stderr = await prco.communicate()
             #logging.debug(stdout.decode())
             #logging.debug(stderr.decode())
             if prco.returncode != 0:
                 logging.error(f"Error finding modules: {stderr.decode()}")
                 return []
-                
+
             # parse output
             modules_o = stdout.decode().strip()
             if not modules_o:
                 logging.warning("No modules found")
                 return []
-                
+
             modules = [ line for line in modules_o.split("\n") if line.strip() ]
             return modules
         except Exception as e:

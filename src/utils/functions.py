@@ -119,18 +119,24 @@ async def download_github_repo(url: str, token: str, target_dir_name:str) -> Opt
 
 def _download_file(url:str, headers: Dict = None) -> Optional[str]:
     "downloads a file from the given url"
-    try:
-        # create temp file
-        with tempfile.NamedTemporaryFile(delete=False) as temp_file:
-            temp_file.close()
-            # download the file
-            req = urllib.request.Request(url, headers=headers)
-            with urllib.request.urlopen(req) as response, open(temp_file.name, 'wb') as out_file:
-                shutil.copyfileobj(response, out_file)
-            return temp_file.name
-    except Exception as e:
-        logging.error(f"Error downloading file: {e}")
-        return None
+    max_retries = 3
+    retry_count = 0
+    while retry_count < max_retries:
+        try:
+            # create temp file
+            with tempfile.NamedTemporaryFile(delete=False) as temp_file:
+                temp_file.close()
+                # download the file
+                req = urllib.request.Request(url, headers=headers)
+                with urllib.request.urlopen(req) as response, open(temp_file.name, 'wb') as out_file:
+                    shutil.copyfileobj(response, out_file)
+                return temp_file.name
+        except Exception as e:
+            retry_count += 1
+            if retry_count == max_retries:
+                logging.error(f"Error downloading file after {max_retries} tries: {e}")
+                return None
+            logging.warning(f"Download attempt {retry_count} failed: {e}. Retrying...")
 
 def _extract_zip(zip_path: str) -> Optional[str]:
     "extracts the zip file"

@@ -1,12 +1,15 @@
 import asyncio
 from network.message import Message, MessageType
 from network.protocol import AsyncProtocol
-from typing import Dict, Set
+from typing import Dict, Set, List
 import logging
 import time
 import random
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+CHECK_DEAD_NODES_INTERVAL:float = 15
+MAX_DEAD_TRIES = 3
 
 def generate_id():
     """
@@ -31,6 +34,10 @@ class Network:
         self.peers:Dict[str,tuple[str,int]] = {}
         self.node_id:str = str(generate_id()) if start else None # type: ignore
         self.discovery_task:asyncio.Task = None # type: ignore
+
+        # recover from network failures
+        self.dead_peers:Dict[str,List] = {}
+        self.last_dead_check:float = 0.0
 
     async def start(self) :
         self.protocol = await AsyncProtocol.create(self.node_addr)
@@ -62,6 +69,8 @@ class Network:
         remove a peer from the list of peers
         """
         if id in self.peers:
+            addr = self.peers[id]
+            self.dead_peers[id] = [addr,0]
             del self.peers[id]
             logging.info(f"Removed peer {id} from the list of peers")
 
@@ -140,19 +149,27 @@ class Network:
         s = set(self.peers.keys())
         s = s.union(set(p.keys()))
         new_peers = {}
-        
+
         #logging.warning(f"Merging peers: {s} with excluded: {excluded}")
 
         for node_id in s:
 
             # skip this node entry
-            if node_id == self.node_id or node_id in excluded:
+            if node_id == self.node_id:
+               continue
+            if node_id in excluded and not(node_id in self.dead_peers):
+                addr = self.peers.get(node_id, p.get(node_id))
+                self.dead_peers[node_id] = [addr,0]
                 continue
 
             if node_id in self.peers:
                 new_peers[node_id] = tuple(self.peers[node_id])
             else:
                 new_peers[node_id] = tuple(p[node_id])
+
+            # remove node from dead peers if it exists
+            if node_id in self.dead_peers:
+                del self.dead_peers[node_id]
 
         self.peers = new_peers
 
@@ -169,15 +186,44 @@ class Network:
     async def recv(self) -> tuple[Dict,tuple[str,int]]:
         return await self.protocol.recv()
 
-    def HEARTBEAT(self,data:dict) -> None:
+    def heartbeat2dead(self,mssg):
+
+        # check if there are dead peers
+        if len(self.dead_peers.keys()) == 0:
+            return
+
+        # check if there is the time to check dead peers
+        if time.time() - self.last_dead_check < CHECK_DEAD_NODES_INTERVAL:
+            return
+
+        to_remove = []
+        for dead_id,dead_peer_entry in self.dead_peers.items():
+            self.protocol.send(mssg.to_dict(), dead_peer_entry[0])
+
+            times = dead_peer_entry[1] + 1
+            if times >= MAX_DEAD_TRIES:
+                logging.warning(f"Peer {dead_peer_entry[0]} is dead, removing from the list of peers")
+                to_remove.append(dead_id)
+                continue
+
+            # update the dead peer entry
+            self.dead_peers[dead_id][1] = times
+
+        for id in to_remove:
+            del self.dead_peers[id]
+
+        self.last_dead_check = time.time()
+
+    def heartbeat(self,data:dict) -> None:
 
         mssg = Message(
         MessageType.HEARTBEAT,
         data,
         )
         self.__send_to_all(mssg)
+        self.heartbeat2dead(mssg)
 
-    def TASK_ANNOUNCE(self) -> None:
+    def task_announce(self) -> None:
         """
         announce a new project to the network
         """
@@ -187,7 +233,7 @@ class Network:
         )
         self.__send_to_all(mssg)
 
-    def TASK_REQUEST(self, addr:tuple[str,int]) -> None:
+    def task_request(self, addr:tuple[str,int]) -> None:
         """
         request a task from the anouncer
         """
@@ -197,7 +243,7 @@ class Network:
         )
         self.protocol.send(mssg.to_dict(), addr)
 
-    def TASK_SEND(self,addr:tuple, info:dict) -> None:
+    def task_send(self,addr:tuple, info:dict) -> None:
         """
         send a task to the requester
         """
@@ -207,7 +253,7 @@ class Network:
         )
         self.protocol.send(mssg.to_dict(), addr)
 
-    def TASK_CONFIRM(self, addr:tuple, content:Dict) -> None:
+    def task_confirm(self, addr:tuple, content:Dict) -> None:
         """
         confirm a task to the requester
         """
@@ -217,7 +263,7 @@ class Network:
         )
         self.protocol.send(mssg.to_dict(), addr)
 
-    def CACHE_UPDATE(self, cache:Dict)->None:
+    def cache_update(self, cache:Dict)->None:
         """
         send cache to all peers
         """
@@ -227,7 +273,7 @@ class Network:
         )
         self.__send_to_all(mssg)
 
-    def PROJECT_ANNOUNCE(self,info:Dict)->None:
+    def project_announce(self,info:Dict)->None:
         """
         send project anounce to all peers
         """
@@ -238,7 +284,7 @@ class Network:
         self.__send_to_all(mssg)
 
 
-    def RECOVERY_ELECTION(self, data:Dict)->None:
+    def recovery_election(self, data:Dict)->None:
         """
         Anuncia candidatura para eleição de recuperação
         """
@@ -248,8 +294,8 @@ class Network:
             data,
         )
         self.__send_to_all(mssg)
-        
-    def RECOVERY_ELECTION_REP(self, addr, data:Dict)-> None:
+
+    def recovery_election_rep(self, addr, data:Dict)-> None:
         """
         Responde a uma eleição de recuperação
         """
@@ -257,11 +303,11 @@ class Network:
             MessageType.RECOVERY_ELECTION_REP,
             data,
         )
-        
+
         # send to node
         self.protocol.send(mssg.to_dict(), addr)
 
-    def RECOVERY_ELECTION_RESULT(self,addr, data:Dict)->None:
+    def recovery_election_result(self,addr, data:Dict)->None:
         """
         Anuncia o resultado da eleição de recuperação
         """
@@ -271,7 +317,7 @@ class Network:
         )
         self.protocol.send(mssg.to_dict(), addr)
 
-    def EVALUATION_RESPONSIBILITY_UPDATE(self, data:Dict)->None:
+    def evaluation_responsibility_update(self, data:Dict)->None:
         """
         Anuncia que um nó assumiu responsabilidade por um projeto
         """
