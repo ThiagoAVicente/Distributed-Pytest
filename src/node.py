@@ -506,9 +506,9 @@ class Node:
 
 
         if active_evaluations:
-            logging.info(f"Found active evaluations for node {node_id}: {active_evaluations}")
+            logging.info(f"Found active projects for node {node_id}: {active_evaluations}")
         else:
-            logging.warning(f"No active evaluations found for node {node_id}")
+            logging.warning(f"No active projects found for node {node_id}")
 
         return active_evaluations
 
@@ -778,7 +778,7 @@ class Node:
         while self.is_running:
             current_time = time.time()
             for node_id, last_time in list(self.last_heartbeat_received.items()):
-                if current_time - last_time > 5 * HEARTBEAT_INTERVAL:
+                if current_time - last_time > 3 * HEARTBEAT_INTERVAL:
 
                     del self.last_heartbeat_received[node_id]  # Remove o nó falho
                     if node_id not in self.network.peers:  # type: ignore
