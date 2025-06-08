@@ -22,14 +22,22 @@ Distributed CD Tester é um sistema baseado em Python projetado para distribuir 
 ├── docker/                  # Arquivos relacionados ao Docker
 │   ├── Dockerfile           # Definição da imagem Docker
 │   ├── .dockerignore        # Arquivos a ignorar na construção do Docker
+├── doc/                     # Documentação adicional
+│   ├── Projecto CD 2025-3.pdf   # Documento principal do projeto
+│   └── protocolo.pdf            # Detalhes do protocolo de rede
 ├── src/                     # Código-fonte
-│   ├── initNode.py          # Script de inicialização do nó
 │   ├── api.py               # API REST baseada em Flask
 │   ├── node.py              # Lógica central do nó
+│   ├── managers/            # Gerenciadores de tarefas e cache
+│   │   ├── BaseManager.py   # Classe base para gerenciadores
+│   │   ├── CacheManager.py  # Gerenciamento de cache
+│   │   ├── TaskManager.py   # Gerenciamento de tarefas
+│   │   ├── README.md        # Documentação dos managers
 │   ├── network/             # Comunicação de rede
 │   │   ├── Network.py       # Abstração de rede
 │   │   ├── message.py       # Tipos e estrutura de mensagens
 │   │   ├── protocol.py      # Protocolo UDP assíncrono
+│   │   ├── README.md        # Documentação da camada de rede
 │   ├── utils/               # Funções utilitárias
 │   │   ├── functions.py     # Manipulação de arquivos e GitHub
 │   │   ├── module_finder.py # Descoberta de módulos de teste
