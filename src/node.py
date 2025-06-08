@@ -25,7 +25,7 @@ URL:int = 1
 ZIP:int = 0
 HEARTBEAT_INTERVAL:float = 7
 UPDATE_INTERVAL:float = 5
-TASK_ANNOUNCE_INTERVAL:float = 2
+TASK_ANNOUNCE_INTERVAL:float = 3
 
 EPS: float = 1e-10
 
