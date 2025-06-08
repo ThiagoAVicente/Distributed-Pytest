@@ -25,6 +25,7 @@ Distributed CD Tester é um sistema baseado em Python projetado para distribuir 
 ├── doc/                     # Documentação adicional
 │   ├── Projecto CD 2025-3.pdf   # Documento principal do projeto
 │   └── protocolo.pdf            # Detalhes do protocolo de rede
+│   └── relatorio.pdf            # Detalhes do protocolo de rede
 ├── src/                     # Código-fonte
 │   ├── api.py               # API REST baseada em Flask
 │   ├── node.py              # Lógica central do nó
