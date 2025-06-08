@@ -165,7 +165,6 @@ class Node:
                 "failed": 0,
                 "passed": 0,
                 "projects": 0,
-                "modules": 0,
                 "evaluations": 0,
             }
 
@@ -180,7 +179,6 @@ class Node:
 
                 # for each module in projecet
                 for module_stats in project_data["modules"].values():
-                    res["modules"] += 1
                     res["passed"] += module_stats["passed"]
                     res["failed"] += module_stats["failed"]
 
@@ -201,7 +199,7 @@ class Node:
         stats = self.cache_manager.get_status_cache()
 
         res["nodes"] = [
-            {"addr": node, **{k: v for k, v in data["stats"].items() if k != "submitted_evaluation"}}
+            {"address": node, **{k: v for k, v in data["stats"].items() if k != "submitted_evaluation"}}
             for node, data in stats.items()
         ]
         res["nodes"].append
