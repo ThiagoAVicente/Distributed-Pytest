@@ -58,7 +58,7 @@ Distributed CD Tester é um sistema baseado em Python projetado para distribuir 
 
    ```
     git clone \<URL\_DO\_REPOSITORIO>
-    cd rede-testes-distribuida
+    cd cd2025_proj_-120482_121497
    ```
 
 2. **Configurar Variáveis de Ambiente**:
