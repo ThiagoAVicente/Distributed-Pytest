@@ -1,5 +1,9 @@
 # Rede de Testes Distribuída
 
+## Nota: 20
+Diogo Duarte (120482)
+Thiago Vicente (121497)
+
 ## Visão Geral
 
 Distributed CD Tester é um sistema baseado em Python projetado para distribuir e executar testes automatizados em múltiplos nós numa rede descentralizada. Utiliza Docker para conteinerização, `asyncio` para comunicação assíncrona e `pytest` para execução de testes. O sistema é tolerante a falhas, capaz de detectar falhas de nós, redistribuir tarefas e eleger nós de recuperação para garantir operação contínua.
