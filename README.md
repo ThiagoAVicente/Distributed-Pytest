@@ -185,3 +185,15 @@ Esse mecanismo garante que avaliações não sejam perdidas e que a rede continu
   ```bash
     docker logs <nome_do_container>
   ```
+
+---
+
+## Ilustração do Fluxo do Projeto
+
+<div align="center">
+  <h4>Exemplo visual do fluxo das mensagens durante vários cenários entre os quais falhas do coordenador ou do worker</h4>
+  <img src="https://github.com/user-attachments/assets/388703f1-b046-4536-b263-42a6a68bc289" alt="GIF ilustrativo do processo de recuperação">
+</div>
+
+---
+
