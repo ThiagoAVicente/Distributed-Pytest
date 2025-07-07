@@ -2,6 +2,7 @@
 
 ## Nota: 20
 Diogo Duarte (120482)
+
 Thiago Vicente (121497)
 
 ## Visão Geral
